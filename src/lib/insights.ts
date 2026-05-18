@@ -18,7 +18,17 @@
 
 import { formatInTimeZone } from "date-fns-tz";
 
-export type InsightKind = "low_intake" | "low_pee" | "formula_share" | "long_gap" | "long_diaper_gap";
+// `offline_queue_pending` is composed client-side from the IndexedDB queue
+// (Phase 3 Task 2), NOT emitted by `computeInsights` — this server-side pure
+// function has no access to the browser queue. It lives in the union so the
+// client offline bar shares the one `Insight` shape.
+export type InsightKind =
+  | "low_intake"
+  | "low_pee"
+  | "formula_share"
+  | "long_gap"
+  | "long_diaper_gap"
+  | "offline_queue_pending";
 
 export type Insight = { kind: InsightKind; severity: "info"; text: string };
 
