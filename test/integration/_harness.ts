@@ -157,6 +157,7 @@ export async function assertAppDbIsRlsEnforced(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 const APP_TABLES = [
+  "rate_limits",
   "event_audit",
   "inbound_events",
   "event_outbox",
@@ -175,28 +176,28 @@ const APP_TABLES = [
 ] as const;
 
 /**
- * Ensures the schema is present. The migration is hand-authored SQL with
- * the RLS block appended; `pnpm db:migrate` owns first-time setup. Here we
- * only need an idempotent guard — if the core tables exist we assume the
- * single `0000_*` migration has been applied (this gate characterizes an
- * EXISTING DB, it does not provision one). If they are missing we apply
- * `0000_loud_leech.sql` via the admin (owner) connection so the suite is
- * self-bootstrapping on a fresh DB.
+ * Ensures the schema is present. The migrations are hand-authored SQL
+ * with the RLS blocks appended; `pnpm db:migrate` owns first-time setup.
+ * Here we only need an idempotent guard per migration — each is keyed on
+ * a sentinel table it creates (`feed_events` for 0000, `rate_limits` for
+ * 0002). If the sentinel is absent we apply that migration via the admin
+ * (owner) connection so the suite is self-bootstrapping on a fresh DB.
  */
-export async function runMigrations(): Promise<void> {
+async function tableExists(name: string): Promise<boolean> {
   const [{ present }] = await adminClient<{ present: boolean }[]>`
     SELECT EXISTS (
       SELECT 1 FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'feed_events'
+      WHERE table_schema = 'public' AND table_name = ${name}
     ) AS present
   `;
-  if (present) return;
+  return present;
+}
 
-  const migrationPath = resolve(
-    process.cwd(),
-    "src/lib/db/migrations/0000_loud_leech.sql",
+async function applyMigration(file: string): Promise<void> {
+  const ddl = readFileSync(
+    resolve(process.cwd(), "src/lib/db/migrations", file),
+    "utf8",
   );
-  const ddl = readFileSync(migrationPath, "utf8");
   // drizzle-kit uses this exact statement separator.
   const statements = ddl
     .split("--> statement-breakpoint")
@@ -204,6 +205,15 @@ export async function runMigrations(): Promise<void> {
     .filter((s) => s.length > 0);
   for (const statement of statements) {
     await adminClient.unsafe(statement);
+  }
+}
+
+export async function runMigrations(): Promise<void> {
+  if (!(await tableExists("feed_events"))) {
+    await applyMigration("0000_loud_leech.sql");
+  }
+  if (!(await tableExists("rate_limits"))) {
+    await applyMigration("0002_rate_limits.sql");
   }
 }
 

@@ -11,6 +11,15 @@
  * Bearer-token routes (/api/events, /api/voice) authenticate by token,
  * not cookie, so CSRF does not apply — they are exempt.
  *
+ * No-session routes (/api/recovery/redeem, /api/invites/[token]/accept)
+ * are reached from devices that have NO session cookie yet (a lost
+ * phone redeeming a code; a partner opening an invite link). They
+ * cannot satisfy `X-Requested-With: fetch` from a fresh navigation, so
+ * that header requirement is lifted for them — but the same-origin
+ * `Origin` check still applies (a cross-site form post cannot forge a
+ * matching Origin, and these endpoints are otherwise gated by an
+ * unguessable hashed token + rate limiting). Phase 2 Task 2.
+ *
  * Session *resolution* is deliberately NOT done here (it needs the DB);
  * route handlers call withAuth() themselves.
  */
@@ -18,6 +27,15 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const BEARER_EXEMPT = ["/api/events", "/api/voice"];
+
+// CSRF: keep the same-origin Origin check, drop only the
+// X-Requested-With requirement for routes hit pre-session.
+function isRequestedWithExempt(path: string): boolean {
+  if (path === "/api/recovery/redeem") return true;
+  // /api/invites/<token>/accept — exempt the accept sub-path only, not
+  // the owner-only POST /api/invites mint (which IS a normal fetch).
+  return /^\/api\/invites\/[^/]+\/accept$/.test(path);
+}
 
 export function middleware(req: NextRequest): NextResponse {
   if (!MUTATING.has(req.method)) return NextResponse.next();
@@ -32,8 +50,10 @@ export function middleware(req: NextRequest): NextResponse {
 
   const origin = req.headers.get("origin");
   const requestedWith = req.headers.get("x-requested-with");
+  const requestedWithOk =
+    isRequestedWithExempt(path) || requestedWith === "fetch";
 
-  if (origin !== allowedOrigin || requestedWith !== "fetch") {
+  if (origin !== allowedOrigin || !requestedWithOk) {
     return NextResponse.json(
       {
         ok: false,

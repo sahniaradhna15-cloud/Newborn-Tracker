@@ -8,6 +8,13 @@
       "when": 1779068324749,
       "tag": "0000_loud_leech",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779139137036,
+      "tag": "0002_rate_limits",
+      "breakpoints": true
     }
   ]
 }

@@ -6,13 +6,17 @@
  * `pee OR poop` invariant (diaper_events_presence_chk) with a clean 400
  * instead of letting the DB CHECK throw a 500.
  *
- * `DELETE /api/diapers/:id` — hard delete (Phase 1). RLS confines both to
- * the caller's household. Both are mutations → CSRF/Origin middleware applies.
+ * `DELETE /api/diapers/:id` — hard delete. RLS confines both to the
+ * caller's household. Both write an `event_audit` row (PATCH:
+ * before/after; DELETE: before/null) in the SAME tx as the mutation
+ * (CLAUDE.md §11.4, Phase 2 Task 2). Both are mutations → CSRF/Origin
+ * middleware applies.
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
+import { toAuditJson, writeAudit } from "@/lib/audit";
 import { diaperEvents } from "@/lib/db/schema";
 import { withAuth } from "@/lib/with-auth";
 import { withUserContext } from "@/lib/with-user-context";
@@ -66,6 +70,16 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       })
       .where(eq(diaperEvents.id, id))
       .returning();
+
+    await writeAudit(tx, {
+      actor_user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      kind: "diaper.updated",
+      entity_table: "diaper_events",
+      entity_id: row.id,
+      before: toAuditJson(existing),
+      after: toAuditJson(row),
+    });
     return { row };
   });
 
@@ -89,8 +103,29 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!z.uuid().safeParse(id).success) {
     return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
   }
-  await withUserContext(ctx.user_id, (tx) =>
-    tx.delete(diaperEvents).where(eq(diaperEvents.id, id)),
-  );
+  const deleted = await withUserContext(ctx.user_id, async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(diaperEvents)
+      .where(eq(diaperEvents.id, id))
+      .limit(1);
+    if (!existing) return false;
+
+    await tx.delete(diaperEvents).where(eq(diaperEvents.id, id));
+    await writeAudit(tx, {
+      actor_user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      kind: "diaper.deleted",
+      entity_table: "diaper_events",
+      entity_id: id,
+      before: toAuditJson(existing),
+      after: null,
+    });
+    return true;
+  });
+
+  if (!deleted) {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+  }
   return new NextResponse(null, { status: 204 });
 }

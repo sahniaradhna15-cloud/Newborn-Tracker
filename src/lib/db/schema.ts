@@ -375,3 +375,18 @@ export const eventAudit = pgTable(
   },
   (t) => [index("event_audit_household_time_idx").on(t.householdId, t.createdAt.desc())],
 );
+
+/**
+ * Postgres-backed token-bucket rate limiting (Decision #7 — no Redis in
+ * the stack, CLAUDE.md §2). One row per logical key (e.g.
+ * `recovery_redeem:<ip>`); `window_start` anchors the current fixed
+ * window and `count` is the consumed quota in it. RLS is enabled with
+ * NO anon/authenticated grants — it is touched only by server route
+ * handlers (some pre-session), never via Supabase's auto API. See the
+ * RLS header in migrations/0002_rate_limits.sql.
+ */
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  windowStart: tz("window_start").notNull(),
+  count: integer("count").notNull(),
+});

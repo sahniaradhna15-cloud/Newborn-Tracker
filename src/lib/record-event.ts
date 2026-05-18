@@ -23,6 +23,7 @@
 import { and, asc, eq, gte, isNull, lte, ne } from "drizzle-orm";
 import { toZonedTime } from "date-fns-tz";
 
+import { writeAudit, toAuditJson } from "./audit";
 import { db } from "./db/client";
 import { dayNumberSinceBirth, getDayWindow } from "./day-window";
 import { babies, diaperEvents, feedEvents, inboundEvents, momEvents } from "./db/schema";
@@ -232,9 +233,18 @@ export async function recordEvent(
           source: ctx.source,
           clientUuid: inbound.client_uuid,
         })
-        .returning({ id: feedEvents.id });
+        .returning();
 
       await finalize(tx, inboundId, row.id, "feed_events");
+      await writeAudit(tx, {
+        actor_user_id: ctx.user_id,
+        household_id: ctx.household_id,
+        kind: "feed.created",
+        entity_table: "feed_events",
+        entity_id: row.id,
+        before: null,
+        after: toAuditJson(row),
+      });
       await enqueue(tx, "event.feed.recorded", {
         event_id: row.id,
         baby_id: babyId,
@@ -261,9 +271,18 @@ export async function recordEvent(
           source: ctx.source,
           clientUuid: inbound.client_uuid,
         })
-        .returning({ id: diaperEvents.id });
+        .returning();
 
       await finalize(tx, inboundId, row.id, "diaper_events");
+      await writeAudit(tx, {
+        actor_user_id: ctx.user_id,
+        household_id: ctx.household_id,
+        kind: "diaper.created",
+        entity_table: "diaper_events",
+        entity_id: row.id,
+        before: null,
+        after: toAuditJson(row),
+      });
       await enqueue(tx, "event.diaper.recorded", {
         event_id: row.id,
         baby_id: babyId,
@@ -285,9 +304,18 @@ export async function recordEvent(
         source: ctx.source,
         clientUuid: inbound.client_uuid,
       })
-      .returning({ id: momEvents.id });
+      .returning();
 
     await finalize(tx, inboundId, row.id, "mom_events");
+    await writeAudit(tx, {
+      actor_user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      kind: "mom.created",
+      entity_table: "mom_events",
+      entity_id: row.id,
+      before: null,
+      after: toAuditJson(row),
+    });
     await enqueue(tx, "event.mom.recorded", {
       event_id: row.id,
       household_id: ctx.household_id,

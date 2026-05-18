@@ -4,8 +4,10 @@
  * (CLAUDE.md §3 rule 1). `estimated_oz` is recomputed from the merged values
  * via the shared {@link estimateFeedOz} so totals stay consistent.
  *
- * `DELETE /api/feeds/:id` — hard delete (Phase 1; `event_audit` is wired in
- * Phase 2 Task 1). RLS confines both to the caller's household.
+ * `DELETE /api/feeds/:id` — hard delete. RLS confines both to the
+ * caller's household. Both write an `event_audit` row (PATCH:
+ * before/after; DELETE: before/null) in the SAME tx as the mutation
+ * (CLAUDE.md §11.4, Phase 2 Task 2).
  *
  * Both are mutations → subject to the CSRF/Origin middleware.
  */
@@ -13,6 +15,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
+import { toAuditJson, writeAudit } from "@/lib/audit";
 import { babies, feedEvents } from "@/lib/db/schema";
 import { babyAgeDays, estimateFeedOz, round1 } from "@/lib/record-event";
 import { withAuth } from "@/lib/with-auth";
@@ -92,6 +95,16 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       })
       .where(eq(feedEvents.id, id))
       .returning();
+
+    await writeAudit(tx, {
+      actor_user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      kind: "feed.updated",
+      entity_table: "feed_events",
+      entity_id: row.id,
+      before: toAuditJson(existing),
+      after: toAuditJson(row),
+    });
     return row;
   });
 
@@ -110,8 +123,29 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!z.uuid().safeParse(id).success) {
     return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
   }
-  await withUserContext(ctx.user_id, (tx) =>
-    tx.delete(feedEvents).where(eq(feedEvents.id, id)),
-  );
+  const deleted = await withUserContext(ctx.user_id, async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(feedEvents)
+      .where(eq(feedEvents.id, id))
+      .limit(1);
+    if (!existing) return false;
+
+    await tx.delete(feedEvents).where(eq(feedEvents.id, id));
+    await writeAudit(tx, {
+      actor_user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      kind: "feed.deleted",
+      entity_table: "feed_events",
+      entity_id: id,
+      before: toAuditJson(existing),
+      after: null,
+    });
+    return true;
+  });
+
+  if (!deleted) {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+  }
   return new NextResponse(null, { status: 204 });
 }
