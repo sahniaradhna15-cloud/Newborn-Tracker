@@ -1,5 +1,13 @@
 import { defineConfig } from "drizzle-kit";
 
+// drizzle-kit does not auto-load .env.local; do it here so
+// `pnpm db:migrate` / `db:generate` see DATABASE_URL_DIRECT.
+try {
+  process.loadEnvFile(".env.local");
+} catch {
+  // absent — rely on the ambient environment
+}
+
 export default defineConfig({
   schema: "./src/lib/db/schema.ts",
   out: "./src/lib/db/migrations",

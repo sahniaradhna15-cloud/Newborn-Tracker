@@ -240,16 +240,38 @@ CREATE POLICY invites_peer_recovery_insert ON invites FOR INSERT
 CREATE POLICY recovery_codes_self ON recovery_codes
   USING (user_id = NULLIF(current_setting('request.user_id', true), '')::uuid);
 
--- Helper: current user's households
+-- Helper: current user's households.
+-- MUST be SECURITY DEFINER. `household_members` has RLS enabled and its own
+-- policy is expressed via this function. An invoker-rights version would have
+-- its internal SELECT on household_members filtered by that same policy, the
+-- lookup would resolve to the empty set, and EVERY household-scoped policy
+-- would then deny all rows — the app loads but shows no data (a silent,
+-- catastrophic R1-adjacent failure). SECURITY DEFINER makes this one
+-- membership read bypass RLS and breaks the cycle. `search_path` is pinned and
+-- identifiers are schema-qualified — the standard SECURITY DEFINER hardening
+-- against search-path injection. Do NOT remove SECURITY DEFINER.
 CREATE OR REPLACE FUNCTION current_user_households() RETURNS SETOF uuid
-LANGUAGE sql STABLE AS $$
-  SELECT household_id FROM household_members
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+  SELECT household_id FROM public.household_members
   WHERE user_id = NULLIF(current_setting('request.user_id', true), '')::uuid;
 $$;
 
--- Example policy (repeat the pattern for each table)
+-- household_members policy. Safe to express via the helper ONLY because the
+-- helper is SECURITY DEFINER (no re-entrancy). A member sees all co-members of
+-- their household — required by /settings/caregivers and "logged by" attribution.
+CREATE POLICY household_members_household ON household_members
+  USING (household_id IN (SELECT current_user_households()))
+  WITH CHECK (household_id IN (SELECT current_user_households()));
+
+-- Example policy (repeat the pattern for each table). NOTE: every policy on an
+-- INSERT/UPDATE-able table needs BOTH `USING` (read/visibility) AND
+-- `WITH CHECK` (write guard). A `USING`-only policy lets a caller INSERT or
+-- UPDATE rows into another household — a write-side data-leak hole. Pair them.
 CREATE POLICY feed_events_household ON feed_events
   USING (baby_id IN (
+    SELECT id FROM babies WHERE household_id IN (SELECT current_user_households())
+  ))
+  WITH CHECK (baby_id IN (
     SELECT id FROM babies WHERE household_id IN (SELECT current_user_households())
   ));
 

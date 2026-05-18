@@ -2,8 +2,8 @@
 
 > **Phase:** 1 of 3 from PLAN.md (Week 1)
 > **Tasks:** 4 (max 4)
-> **Overall Progress: 25% (Task 1 of 4 complete)**
-> **Status:** In Progress — Task 1 (scaffold + infra) ✅ done 2026-05-16; Next.js 16 + Tailwind 4 (superseding planned 15/3)
+> **Overall Progress: 50% (Tasks 1–2 of 4 complete)**
+> **Status:** In Progress — Task 1 ✅ (2026-05-16). Task 2 ✅ (2026-05-17): migrations applied to live Supabase, seed idempotent, onboarding/redirect verified, RLS isolation enforced via dedicated `app_runtime` role (owner-bypass P0 found + fixed). Next.js 16 + Tailwind 4 (superseding planned 15/3).
 > **Task Token Budget:** Each task ≤ 150K tokens
 
 ## TLDR

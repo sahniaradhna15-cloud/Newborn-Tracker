@@ -276,10 +276,17 @@ LANGUAGE sql STABLE AS $$
   SELECT NULLIF(current_setting('request.user_id', true), '')::uuid;
 $$;
 
+-- MUST be SECURITY DEFINER. household_members has RLS enabled and its policy is
+-- itself expressed via this function. An invoker-rights version would have its
+-- own SELECT on household_members filtered by that policy, resolve to the empty
+-- set, and make every household-scoped policy deny ALL rows — the app loads but
+-- shows no data (silent, app-wide). SECURITY DEFINER makes this one membership
+-- read bypass RLS and breaks the cycle. search_path is pinned and identifiers
+-- schema-qualified — standard SECURITY DEFINER hardening. Do NOT remove it.
 CREATE OR REPLACE FUNCTION current_user_households() RETURNS SETOF uuid
-LANGUAGE sql STABLE AS $$
-  SELECT household_id FROM household_members
-  WHERE user_id = current_user_id();
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+  SELECT household_id FROM public.household_members
+  WHERE user_id = public.current_user_id();
 $$;
 
 -- =============================================================================
@@ -307,6 +314,10 @@ CREATE POLICY households_member ON households FOR ALL
   USING      (id IN (SELECT current_user_households()))
   WITH CHECK (id IN (SELECT current_user_households()));
 
+-- Safe to express via the helper ONLY because current_user_households() is
+-- SECURITY DEFINER (no re-entrancy into this table's own policy). A member sees
+-- all co-members of their household — needed for /settings/caregivers + "logged
+-- by" attribution. Do not rewrite this to call the helper without that.
 CREATE POLICY household_members_member ON household_members FOR ALL
   USING      (household_id IN (SELECT current_user_households()))
   WITH CHECK (household_id IN (SELECT current_user_households()));
@@ -385,9 +396,14 @@ CREATE POLICY recovery_codes_self ON recovery_codes FOR ALL
 
 -- ---- cross-cutting --------------------------------------------------------
 
-CREATE POLICY inbound_events_household ON inbound_events FOR ALL
-  USING      (household_id IN (SELECT current_user_households()))
-  WITH CHECK (household_id IN (SELECT current_user_households()));
+-- Scoped by user_id, NOT household_id. recordEvent INSERTs the inbound_events
+-- row before household_id is necessarily resolved, and household_id is
+-- nullable: a household predicate would fail WITH CHECK (NULL IN (...) => NULL
+-- => reject) and also block the ON CONFLICT (source, client_uuid) idempotency
+-- read. user_id is always known at write time and makes a replay same-user safe.
+CREATE POLICY inbound_events_self ON inbound_events FOR ALL
+  USING      (user_id = current_user_id())
+  WITH CHECK (user_id = current_user_id());
 
 CREATE POLICY event_audit_household_read ON event_audit FOR SELECT
   USING (household_id IN (SELECT current_user_households()));

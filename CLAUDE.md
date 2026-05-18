@@ -97,7 +97,7 @@ These are decided. Do not introduce alternatives without an explicit user-facing
 
 ## 4. Domain model
 
-The data model **is** the product. All tables live in `src/lib/db/schema.ts` and the initial migration `0001_initial.sql`. RLS policies are part of that migration.
+The data model **is** the product. All tables live in `src/lib/db/schema.ts` and the initial migration (Drizzle-generated `0000_*.sql` with the hand-authored RLS block appended; older docs call this `0001_initial.sql` — same artifact, the drizzle-kit tag won). RLS policies are part of that migration.
 
 **Core entities (read PLAN.md §"Data Model" + TECHNICAL_SPEC §3 for full DDL):**
 
@@ -243,14 +243,17 @@ NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 
 # Server-only
-DATABASE_URL=postgres://...pooled.supabase.co:6543/postgres?pgbouncer=true
-DATABASE_URL_DIRECT=postgres://...db.supabase.co:5432/postgres
+DATABASE_URL=postgres://app_runtime...pooled:6543/postgres?pgbouncer=true   # runtime, RLS-enforced; non-owner app_runtime role — NEVER postgres
+DATABASE_URL_DIRECT=postgres://postgres...:5432/postgres                     # migrations + seed only
+DATABASE_URL_ADMIN=postgres://postgres...pooled:6543/postgres?pgbouncer=true # onboarding bypass only (src/lib/db/admin.ts)
 SUPABASE_SERVICE_ROLE_KEY=eyJ...                   # bypasses RLS; allowed in 2 files only
 SENTRY_DSN=https://...
 SENTRY_AUTH_TOKEN=...
 ```
 
-The Supabase service role key bypasses RLS. Only `src/lib/db/admin.ts` and `src/app/api/onboarding/create-household/route.ts` may reference it. All other code paths use the anon key plus `SET LOCAL request.user_id` via `withUserContext`.
+The Supabase service role key bypasses RLS. Only `src/lib/db/admin.ts` and `src/app/api/onboarding/create-household/route.ts` may reference it. All other code paths use `SET LOCAL request.user_id` via `withUserContext`.
+
+**RLS enforcement model (load-bearing — read before touching DB connection config).** RLS is `ENABLE`d, not `FORCE`d, and the Supabase `postgres` role both owns every table and has `BYPASSRLS=true`. Enforcement therefore depends entirely on the runtime connecting as the non-owner `app_runtime` role (LOGIN, NOBYPASSRLS). Pointing `DATABASE_URL` at `postgres` silently disables every policy with no error. The `app_runtime` role + its GRANTs are created out-of-band against the live DB (Supabase `postgres` cannot `ALTER ROLE`); the exact SQL is in `.env.example`. `admin.ts` uses `DATABASE_URL_ADMIN` (the `postgres` role) because `app_runtime` deliberately cannot `SET ROLE service_role`.
 
 ---
 
