@@ -1,18 +1,23 @@
 /**
  * Unified request authentication → AuthContext.
  *
- * Resolver order:
- *   1. Session cookie (PWA)         — implemented here
- *   2. Authorization: Bearer <tok>  — Siri/Watch; STUB in Phase 1,
- *                                     wired in Phase 2 Task 2 (api_tokens)
+ * Resolver order (route-handler path):
+ *   1. Authorization: Bearer <tok>  — Siri/Watch (api_tokens),
+ *                                     wired in Phase 2 Task 3
+ *   2. Session cookie (PWA)         — the fallback
  *
  * Household is resolved under the user's own RLS context: once the
  * session yields a userId we open withUserContext(userId) and read
  * household_members. The membership policy returns exactly that user's
  * row, so no privilege escalation is needed.
+ *
+ * Bearer tokens carry their household directly (`api_tokens.household_id`,
+ * resolved by {@link verifyApiToken}), so the bearer path needs no
+ * membership lookup.
  */
 import { eq } from "drizzle-orm";
 
+import { verifyApiToken } from "./api-token";
 import { householdMembers } from "./db/schema";
 import { verifySessionToken, readSessionCookie } from "./session";
 import { withUserContext } from "./with-user-context";
@@ -65,13 +70,28 @@ export async function getSessionAuthContext(): Promise<AuthContext | null> {
 }
 
 /**
- * Route-handler auth. Tries bearer first (Siri/Watch — STUB in Phase 1,
- * wired in Phase 2 Task 2), then the session cookie.
+ * Route-handler auth. Tries the bearer token first (Siri/Watch via
+ * `api_tokens`), then falls back to the session cookie (PWA).
+ *
+ * A present-but-invalid bearer returns null (do NOT fall through to the
+ * cookie — a Shortcut sending a dead token must get 401, not silently
+ * pick up an unrelated browser session on a shared device).
  */
 export async function withAuth(req: Request): Promise<AuthContext | null> {
   const authz = req.headers.get("authorization");
   if (authz?.toLowerCase().startsWith("bearer ")) {
-    return null;
+    const rawToken = authz.slice(authz.indexOf(" ") + 1).trim();
+    if (!rawToken) return null;
+
+    const resolved = await verifyApiToken(rawToken);
+    if (!resolved) return null;
+
+    return {
+      user_id: resolved.user_id,
+      household_id: resolved.household_id,
+      source: "siri_shortcut",
+      auth_method: "bearer",
+    };
   }
   return getSessionAuthContext();
 }
