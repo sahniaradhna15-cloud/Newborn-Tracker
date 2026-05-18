@@ -1,14 +1,39 @@
-# Plan: Phase 2 — Multi-Caregiver + Siri Voice + History + PDF
+# Plan: Phase 2 — Multi-Caregiver + Siri Voice + Realtime + Pediatrician PDF
 
 > **Phase:** 2 of 3 from PLAN.md (Week 2)
-> **Tasks:** 4 (max 4)
+> **Tasks:** 4 (max 4) — Task 1 is a pre-flight gate; Tasks 2–4 are feature work
 > **Overall Progress: 0%**
 > **Status:** Not Started
 > **Task Token Budget:** Each task ≤ 150K tokens
+> **Refreshed:** 2026-05-18 — reconciled against the codebase as actually built through commit `b6815fb`. Supersedes the 2026-05-14 draft.
 
 ## TLDR
 
-Open the app to a second caregiver, make Siri voice logging excellent (with speak-back of today's total + target — the differentiator), wire Supabase Realtime so both phones reflect each other's logs within 2 seconds, and ship the pediatrician PDF export. Each subsystem stands on top of the canonical event pipeline from Phase 1 — no `recordEvent` changes.
+Open the app to a second caregiver, make Siri voice logging excellent (speak-back of today's total + target — the differentiator), wire Supabase Realtime so both phones reflect each other's logs within 2 seconds, and ship the free single-page pediatrician PDF. Every write still flows through Phase 1's canonical `recordEvent` — no signature changes, only an internal `writeAudit` call. **Task 1 is a hard pre-flight gate**: the Vitest + real-Postgres integration harness and the P0 RLS cross-household isolation test must be green *before any Phase 2 feature code is written* (CLAUDE.md §12/§13, Risk R1).
+
+## Reconciliation Notes (read before executing — the codebase moved since the 2026-05-14 draft)
+
+These are **load-bearing**. The stale draft assumed greenfield; much of its "CREATE" scope is already done. Do **not** re-create:
+
+- **`src/lib/session.ts` already exports** `generateRecoveryCode()`, `normalizeRecoveryCode()`, `hashRecoveryCode()`, `mintSession()`, `verifySessionToken()`, `revokeSession()`, **`revokeAllUserSessions(userId)`**, `setSessionCookie()`, `readSessionCookie()`, `clearSessionCookie()`. → The draft's "create `src/lib/recovery-code.ts` by extraction" is **cancelled**. Recovery-code + session-revocation primitives are reused from `session.ts` as-is. (If a dedicated `recovery-code.ts` module is desired later for tidiness, that is a non-Phase-2 refactor — do not do it here.)
+- **RLS already enforces invite-INSERT authority.** `0000_loud_leech.sql` contains `invites_owner_new_caregiver_insert` (only an owner may INSERT a `target_user_id IS NULL` invite) and `invites_peer_recovery_insert` (any member may INSERT a `target_user_id IS NOT NULL` peer-recovery invite for a co-member). The remaining §11.5 invariant that is **app-layer and must be integration-tested** is the *session-revocation asymmetry* on accept (owner-or-self → revoke priors; caregiver-issued → additive).
+- **`invites_active_target_idx`** (UNIQUE on `target_user_id` WHERE `target_user_id IS NOT NULL AND accepted_at IS NULL`) already exists → "no outstanding unaccepted peer-recovery link" is DB-enforced; handle the unique-violation cleanly, do not re-check in app code as the source of truth.
+- **The 6 Siri Shortcut recipe docs already exist** (`shortcuts/*.shortcut.md` + `shortcuts/README.md`, commit `1b7f51a`). Do **not** re-create them. Task 3 only *verifies/reconciles* them against the final `/api/events` contract and may patch contract drift.
+- **`src/lib/with-auth.ts` bearer path is an explicit stub** (`if (authz?.startsWith("bearer ")) return null;`). Session path, `getSessionAuthContext()`, `withAuth(req)`, and the `AuthContext`/`SourceChannel` types all exist there. Task 3 fills the bearer branch in place — do not move the types.
+- **`src/lib/record-event.ts` has zero `writeAudit` calls.** It returns from inside a single `withUserContext(ctx.user_id, tx => …)` transaction with multiple exit points: `duplicate`, `merged`, and three `accepted` paths (feed / diaper / mom). Audit is written **only on the three `accepted` creates**, inside that transaction, before the return. `duplicate`/`merged` are not creates and are not audited.
+- **`src/lib/day-summary.ts` exists** and is the single-source day rollup: `getDaySummary(userId, householdId, now) → { summary: DaySummaryPayload, baby }`. It is **single-day only**. History and the PDF must call a new sibling `getRangeSummary` added to the *same file* (loop or windowed query that reuses `getDayWindow` + `dailyTargetRange`). Do **not** re-derive feed/diaper totals anywhere else. `IntakeDonut` consumes the existing `summary.feeds` shape (`nursing_oz`/`pumped_oz`/`formula_oz`/`wasted_oz`).
+- **Stack reality:** Next 16 + Tailwind 4 + React 19 (not the draft's 15/3). `cookies()` is async. There is **no `vitest.config.*`** — unit tests run on Vitest defaults. Task 1 introduces the first config file, scoped so unit tests stay DB-free and fast.
+- **Migrations:** single file `src/lib/db/migrations/0000_loud_leech.sql` (the drizzle-kit tag won, as CLAUDE.md §4 predicted — "0001_initial.sql" in old docs == this artifact). New migrations continue from `0002_*`.
+- **Doc spec bug (out of Phase 2 scope, surface to user):** TECHNICAL_SPEC §13 / CLAUDE.md §12 cite spring-forward `2027-03-08`; real America/Chicago DST is `2027-03-14`. `day-window.test.ts` already uses the correct date. This is a docs correction, not a code task.
+
+## Scope & Budget Note (resolve at the checkpoint, before execution)
+
+The skill ceiling is **4 tasks, ≤150K tokens each**. Reconciliation removed meaningful scope (recovery-code module, session-revocation primitive, 6 Siri docs, invite-insert authority logic), but **Task 2 (caregiver identity) and Task 4 (Realtime + History + PDF) remain at the upper budget bound**. Each has a designed clean internal split point (marked `⟂ SPLIT` in its subtasks). Options for the user at the checkpoint:
+
+1. **Run as 4 tasks** — execute Task 2 and Task 4 as *two sub-agent passes each* at the `⟂ SPLIT` line (one Phase 2, four planned tasks, six execution passes). Recommended.
+2. **Split into Phase 2A / 2B** — 2A = Tasks 1–3 (security + voice), 2B = Task 4 (Realtime + History + PDF). Cleaner budget headroom; one extra phase doc.
+
+**DECIDED (2026-05-18, user):** Run as **4 single-pass tasks, no split** — one sub-agent per task, self-managing its context. The `⟂ SPLIT` markers are retained **only as a recovery fallback**: if a Task 2 or Task 4 sub-agent exhausts its budget mid-task, resume with a second pass starting at the marked split line rather than restarting the task. Do not pre-emptively split. The user has explicitly accepted the budget risk on Tasks 2 and 4.
 
 ## Critical Decisions
 
@@ -18,384 +43,364 @@ Open the app to a second caregiver, make Siri voice logging excellent (with spea
 | 2 | Six fixed-shape Siri Shortcuts, not one "smart" parser | Each Shortcut sends a single discriminated payload; one `Ask for Input` prompt per variable | Siri NLP is unreliable in 2026; fixed-shape is rock-solid and free (PLAN.md §"One Shortcut per phrase") |
 | 3 | Realtime over polling | Supabase Realtime → `router.refresh()` in a single `(app)/layout.tsx` client provider | 50 lines vs. a 5s poll on every device; free tier easily covers a family (TECHNICAL_SPEC §6.2) |
 | 4 | PDF export is free, single-page, last-7-days | `@react-pdf/renderer` server-side; served as a download from `/api/export/pediatrician` | Huckleberry paywalls sleep equivalents at $9.99/mo; PLAN.md killer feature #4 |
-| 5 | Audit every write | Every `recordEvent` and every PATCH/DELETE on feed/diaper/mom/weight writes to `event_audit` with before+after payloads | Decision locked in (PLAN.md DECISIONS LOCKED IN — "Edit audit trail") |
+| 5 | Audit every write | Every `recordEvent` create and every PATCH/DELETE on feed/diaper writes to `event_audit` with before+after payloads | Decision locked in (PLAN.md DECISIONS LOCKED IN — "Edit audit trail") |
+| 6 | **RLS isolation test is a pre-flight gate, not a backfill** | Stand up the integration harness + R1 RLS test as Task 1; it must be green before any feature code | CLAUDE.md §12/§13: "Required green before any Phase 2 work." Catches an RLS regression before it ships in the auth-heavy Task 2 |
+| 7 | Postgres-backed rate limiting | `0002_rate_limits.sql` token-bucket table, not in-memory | Correct under serverless cold starts; no Redis in the stack (CLAUDE.md §2) |
 
 ## Relevant Files
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `src/app/i/[token]/page.tsx` | CREATE | Invite-accept landing (new caregiver + peer-recovery) |
-| `src/app/recover/page.tsx` | CREATE | Recovery code redemption |
+| `vitest.config.ts` | CREATE | First Vitest config — two projects: fast DB-free `unit`, and `integration` (real Postgres, serial, setup file) |
+| `test/integration/_harness.ts` | CREATE | Test-DB bootstrap: `appDb` (RLS-enforcing `app_runtime` conn), `adminDb` (postgres conn, fixture setup/teardown), `seedTwoHouseholds()`, `truncateAll()` |
+| `test/integration/rls-isolation.test.ts` | CREATE | **P0 R1** — cross-household SELECT isolation + `mom_events_self` |
+| `test/integration/events-idempotency.test.ts` | CREATE | `/api/events` insert / duplicate / merge / locked-row (Phase-1 carry-over, cheap now harness exists) |
+| `test/integration/peer-recovery.test.ts` | CREATE | **P0 R10** — §11.5 asymmetric-authority on accept (Task 2 DoD) |
+| `test/integration/recovery-code.test.ts` | CREATE | Recovery-code redeem: normalize, rotate, revoke-priors, rate-limit, used-code (Task 2 DoD) |
+| `src/lib/audit.ts` | CREATE | `writeAudit(tx, {...})` — INSERT `event_audit` inside caller's tx |
+| `src/lib/rate-limit.ts` | CREATE | Postgres token-bucket: `consume(tx, key, limit, windowSec) → boolean` |
+| `src/lib/api-token.ts` | CREATE | `mintApiToken` / `verifyApiToken` (updates `last_used_at`) / `revokeApiToken` |
+| `src/lib/db/migrations/0002_rate_limits.sql` | CREATE | `rate_limits(key, window_start, count)` + RLS (service-only / no anon) |
+| `src/app/i/[token]/page.tsx` | CREATE | Invite-accept landing (new caregiver + peer-recovery), no-session |
+| `src/app/recover/page.tsx` | CREATE | Recovery-code redemption form |
+| `src/app/recover/success/page.tsx` | CREATE | Post-redeem "save your new code" card |
 | `src/app/(app)/settings/page.tsx` | CREATE | Settings index |
-| `src/app/(app)/settings/caregivers/page.tsx` | CREATE | Invite + revoke + transfer + peer-recovery |
-| `src/app/(app)/settings/recovery/page.tsx` | CREATE | View/rotate recovery code |
+| `src/app/(app)/settings/caregivers/page.tsx` | CREATE | Invite + revoke + transfer + send-access-link |
+| `src/app/(app)/settings/recovery/page.tsx` | CREATE | Recovery-code status + rotate |
 | `src/app/(app)/settings/voice/page.tsx` | CREATE | API tokens + Siri install deep links |
-| `src/app/(app)/history/page.tsx` | CREATE | Last 7 days, editable EventList |
+| `src/app/(app)/history/page.tsx` | CREATE | Last 7 days + editable EventList |
 | `src/app/(app)/export/pediatrician/page.tsx` | CREATE | PDF preview + download |
-| `src/app/api/invites/route.ts` | CREATE | Owner mints invite (new caregiver) |
-| `src/app/api/invites/[token]/accept/route.ts` | CREATE | Accept invite, mint session |
-| `src/app/api/access-links/route.ts` | CREATE | Peer-recovery link mint |
-| `src/app/api/recovery-code/rotate/route.ts` | CREATE | Rotate recovery code |
-| `src/app/api/recovery/redeem/route.ts` | CREATE | Redeem recovery code (rate-limited, no auth) |
-| `src/app/api/caregivers/route.ts` | CREATE | List caregivers in household |
-| `src/app/api/caregivers/[user_id]/revoke/route.ts` | CREATE | Owner revokes all sessions for user |
-| `src/app/api/caregivers/transfer-ownership/route.ts` | CREATE | Swap owner / caregiver roles |
-| `src/app/api/tokens/route.ts` | CREATE | Mint/revoke API tokens for Siri |
-| `src/app/api/realtime-token/route.ts` | CREATE | Mints short-lived Supabase JWT scoped to household |
-| `src/app/api/voice/route.ts` | CREATE | Legacy adapter → `/api/events` |
-| `src/app/api/export/pediatrician/route.ts` | CREATE | PDF stream |
-| `src/components/EventList.tsx` | CREATE | Editable, grouped by day |
-| `src/components/IntakeDonut.tsx` | CREATE | Recharts donut on dashboard |
-| `src/components/RealtimeProvider.tsx` | CREATE | Subscribes to feed/diaper changes |
-| `src/components/PediatricianPDF.tsx` | CREATE | React-PDF document |
-| `src/lib/audit.ts` | CREATE | `writeAudit(tx, ...)` helper |
-| `src/lib/api-token.ts` | CREATE | Mint/hash/verify API tokens |
-| `src/lib/recovery-code.ts` | MODIFY | Move recovery-code generator here (from `lib/session.ts`) |
-| `src/lib/with-auth.ts` | MODIFY | Populate the bearer-token resolver (stub in Phase 1) |
-| `src/lib/record-event.ts` | MODIFY | Call `writeAudit` inside the transaction |
-| `src/app/api/feeds/[id]/route.ts` | MODIFY | PATCH/DELETE write audit row |
-| `src/app/api/diapers/[id]/route.ts` | MODIFY | PATCH/DELETE write audit row |
-| `src/app/(app)/layout.tsx` | MODIFY | Mount `RealtimeProvider` |
-| `src/components/TodayCard.tsx` | MODIFY | Drop in IntakeDonut |
-| `shortcuts/log-pee.shortcut.md` | CREATE | Manual build instructions + iCloud URL slot |
-| `shortcuts/log-poop.shortcut.md` | CREATE | (same) |
-| `shortcuts/log-dirty-diaper.shortcut.md` | CREATE | (same) |
-| `shortcuts/log-formula.shortcut.md` | CREATE | (same) |
-| `shortcuts/log-pumped.shortcut.md` | CREATE | (same) |
-| `shortcuts/log-nursing.shortcut.md` | CREATE | (same) |
+| `src/app/api/invites/route.ts` | CREATE | Owner mints new-caregiver invite |
+| `src/app/api/invites/[token]/accept/route.ts` | CREATE | Accept invite / peer-recovery, mint session (asymmetric authority) |
+| `src/app/api/access-links/route.ts` | CREATE | Peer-recovery link mint (any member) |
+| `src/app/api/recovery-code/rotate/route.ts` | CREATE | Rotate recovery code (session) |
+| `src/app/api/recovery/redeem/route.ts` | CREATE | Redeem recovery code (no auth, rate-limited) |
+| `src/app/api/caregivers/route.ts` | CREATE | List household members |
+| `src/app/api/caregivers/[user_id]/revoke/route.ts` | CREATE | Owner revokes all sessions for a user |
+| `src/app/api/caregivers/transfer-ownership/route.ts` | CREATE | Swap owner/caregiver roles |
+| `src/app/api/tokens/route.ts` | CREATE | Mint API token (POST) |
+| `src/app/api/tokens/[id]/route.ts` | CREATE | Revoke API token (DELETE) |
+| `src/app/api/voice/route.ts` | CREATE | Legacy adapter → `recordEvent` (bearer) |
+| `src/app/api/realtime-token/route.ts` | CREATE | Short-lived Supabase JWT scoped to household (no-cache) |
+| `src/app/api/export/pediatrician/route.ts` | CREATE | PDF stream (session) |
+| `src/components/EventList.tsx` | CREATE | Editable list grouped by day, with attribution |
+| `src/components/IntakeDonut.tsx` | CREATE | Recharts donut (client) on TodayCard |
+| `src/components/RealtimeProvider.tsx` | CREATE | Subscribes to feed/diaper changes → `router.refresh()` |
+| `src/components/PediatricianPDF.tsx` | CREATE | `@react-pdf/renderer` document |
+| `src/lib/day-summary.ts` | MODIFY | Add `getRangeSummary(userId, householdId, from, to)` reusing the day rollup |
+| `src/lib/with-auth.ts` | MODIFY | Fill the bearer branch (`verifyApiToken`, `source: 'siri_shortcut'`) |
+| `src/lib/record-event.ts` | MODIFY | `writeAudit` on the three `accepted` creates, inside the existing tx |
+| `src/app/api/feeds/[id]/route.ts` | MODIFY | PATCH/DELETE write `event_audit` (before/after) |
+| `src/app/api/diapers/[id]/route.ts` | MODIFY | PATCH/DELETE write `event_audit` (before/after) |
+| `src/middleware.ts` | MODIFY | Exempt `/api/recovery/redeem` + `/api/invites/[token]/accept` from the `X-Requested-With` check (no-session devices); bearer routes already exempt |
+| `src/app/(app)/layout.tsx` | MODIFY | Mount `RealtimeProvider` (create the `(app)` layout if absent) |
+| `src/components/TodayCard.tsx` | MODIFY | Render `IntakeDonut` |
+| `src/app/api/summary/route.ts` | MODIFY | Accept `?days=7` → delegate to `getRangeSummary` |
+| `shortcuts/*.shortcut.md` | VERIFY | Reconcile existing 6 recipes to the final `/api/events` contract — patch only on drift, do not recreate |
+| `README.md` | MODIFY | "Multi-caregiver setup", Siri install, Supabase Realtime enable step |
 
 ## Dependencies
 
 **New packages:**
-- `recharts` — donut + stacked bar on dashboard
-- `@react-pdf/renderer` — server-side PDF for pediatrician export
-- `@supabase/supabase-js` (already installed in Phase 1) — used here for browser Realtime client
+- `recharts` — dashboard donut
+- `@react-pdf/renderer` — server-side pediatrician PDF
+
+**Existing utilities to reuse (do not duplicate):**
+- `src/lib/record-event.ts` — single write path; Siri/voice route through it unchanged
+- `src/lib/voice-parser.ts` — `InboundEvent` Zod schema; `/api/voice` maps onto it
+- `src/lib/with-user-context.ts` — `withUserContext(userId, tx => …)` RLS-bound tx
+- `src/lib/session.ts` — `mintSession`, `verifySessionToken`, `revokeSession`, `revokeAllUserSessions`, `generate/normalize/hashRecoveryCode`, cookie helpers (all already present)
+- `src/lib/with-auth.ts` — `AuthContext`, `getSessionAuthContext`, `withAuth`
+- `src/lib/day-summary.ts` — `getDaySummary`; extend with `getRangeSummary` (same file)
+- `src/lib/day-window.ts` / `src/lib/targets.ts` — windowing + target band for PDF/history
+- `src/lib/db/admin.ts` — `adminDb` (service-role / postgres conn) for the integration harness fixture setup **only**
+- `src/lib/outbox.ts` — `enqueue(tx, topic, payload)` (already called by `recordEvent`)
 
 **Configuration changes:**
-- `NEXT_PUBLIC_APP_URL` must be set correctly — invite URLs and Siri Shortcut URL bases interpolate it
-- Supabase project: enable Realtime on `feed_events` and `diaper_events` tables (UI toggle in Supabase dashboard, or via a small `ALTER PUBLICATION supabase_realtime ADD TABLE ...` SQL)
-
-**Existing utilities to reuse:**
-- `src/lib/record-event.ts` — every Siri write goes through this; do not duplicate
-- `src/lib/voice-parser.ts` — the legacy `/api/voice` adapter maps to this Zod schema
-- `src/lib/with-user-context.ts` — every mutation runs inside a transaction with RLS-bound `request.user_id`
-- `src/lib/session.ts` — `mintSession`, `revokeSession`
-- `src/lib/day-window.ts` and `src/lib/targets.ts` — PDF export reuses these for the 7-day rollup
+- `NEXT_PUBLIC_APP_URL` must be correct — invite URLs and Siri base interpolate it
+- Supabase dashboard one-time: `ALTER PUBLICATION supabase_realtime ADD TABLE feed_events, diaper_events;` (document in README; the user performs it)
+- A test database connection for the integration project — reuse the Supabase dev DB or local Docker Postgres; harness reads a `DATABASE_URL_TEST` (document in `.env.example`, never commit values)
+- `SUPABASE_SERVICE_ROLE_KEY` stays referenced in **exactly two files** (CLAUDE.md §8). The realtime-token route signs a JWT with it — confirm whether this is a *third* referencing file; if so, this requires explicit user discussion at the checkpoint (flagged in Task 4 DoD).
 
 ## Tasks
 
-### Task 1: Invite flow, caregivers settings, peer recovery, recovery codes
+### Task 1: Pre-flight gate — integration harness + P0 RLS isolation (BLOCKS Task 2)
 
-**Estimated scope:** ~13 files (mix of routes + pages + helpers), 7 endpoints, 3 pages
+**Estimated scope:** ~5 files, 0 endpoints, 3 test specs
 **Files touched:**
-- `src/app/i/[token]/page.tsx` (CREATE)
-- `src/app/recover/page.tsx` (CREATE)
-- `src/app/(app)/settings/page.tsx` (CREATE)
-- `src/app/(app)/settings/caregivers/page.tsx` (CREATE)
-- `src/app/(app)/settings/recovery/page.tsx` (CREATE)
+- `vitest.config.ts` (CREATE)
+- `test/integration/_harness.ts` (CREATE)
+- `test/integration/rls-isolation.test.ts` (CREATE)
+- `test/integration/events-idempotency.test.ts` (CREATE)
+- `package.json` (MODIFY — add `test:integration` script; keep `test` = unit only, fast, DB-free)
+- `.env.example` (MODIFY — document `DATABASE_URL_TEST`)
+
+**Subtasks:**
+- [ ] `vitest.config.ts`: two projects. `unit` — `include: ['src/**/*.test.ts']`, no setup, no DB (preserves the current fast 57-test suite exactly). `integration` — `include: ['test/integration/**/*.test.ts']`, `pool: 'forks'`, `singleFork: true` / `fileParallelism: false` (serial — shared DB), `testTimeout: 30000`, loads `_harness.ts`.
+- [ ] `package.json`: `test` stays `vitest run --project unit` (CI default, no DB). Add `test:integration` = `vitest run --project integration`. Add a combined `test:all`.
+- [ ] `test/integration/_harness.ts`: export `appDb` (postgres-js bound to `DATABASE_URL_TEST` as the **`app_runtime`** non-owner role — RLS enforced) and `adminDb` (same DB, postgres/owner role — fixture setup bypasses RLS). Helpers: `runMigrations()` (idempotent, applies `0000_*` + later), `truncateAll()` (TRUNCATE every app table, RESTART IDENTITY, CASCADE — via `adminDb`), `seedTwoHouseholds()` → returns `{ hA: { ownerId, householdId, babyId }, hB: { ownerId, householdId, babyId }, caregiverInHA }`. Provide `asUser(userId, fn)` wrapping `withUserContext` against `appDb`. `afterEach(truncateAll)`; skip the whole project with a clear message if `DATABASE_URL_TEST` is unset (never hang CI).
+- [ ] `test/integration/rls-isolation.test.ts` (**P0, Risk R1**): seed two households.
+  - User A `SELECT … FROM feed_events` returns only A's rows; **zero** of B's. Same for `diaper_events`, `weight_events`, `babies`.
+  - No `request.user_id` GUC set at all (raw `appDb`, no `withUserContext`) → `SELECT count(*) FROM feed_events` = 0 (policy denies).
+  - `mom_events_self`: caregiver in household A cannot see the owner-of-A's `mom_events` even though same household (self-only policy). Owner sees only their own.
+  - Insert as A, attempt read as B → 0 rows (write isolation corollary).
+- [ ] `test/integration/events-idempotency.test.ts`: drive `recordEvent` directly (it is the canonical path). Same `(source, client_uuid)` twice → one row, second result `status:'duplicate'`, identical `event_id`. Two distinct uuids same kind 3 min apart, **same source** → two rows (no cross-source merge → not collapsed). Cross-source within 5 min → `merged`, `corroborating_sources` appended. A row with `locked_at` set is never a merge target.
+
+**Details:**
+- The harness's `app_runtime` connection is the whole point — connecting as `postgres` silently disables RLS and the R1 test would false-pass (CLAUDE.md §8, memory `project_rls_app_runtime_role`). Assert in `_harness.ts` setup that `current_user` is **not** `postgres` and `SELECT current_setting('is_superuser')` is `off`; fail loudly otherwise.
+- This task writes **no application code** — it characterizes existing Phase 1 behavior. If the R1 test fails, that is a Phase 1 RLS regression and **must be fixed before Task 2** (escalate to user; do not paper over).
+
+**Depends on:** None.
+
+**Definition of Done:**
+- `pnpm test` (unit) still green, unchanged 57 tests, no DB required
+- `pnpm test:integration` green: RLS isolation + idempotency specs pass against the real test DB as `app_runtime`
+- Harness refuses to run as a superuser/owner connection (verified by a deliberate misconfig check or an asserted guard)
+- `pnpm typecheck` + `pnpm lint` clean
+- **GATE: Task 2 must not start until `test:integration` is green.**
+
+---
+
+### Task 2: Caregiver identity — invites, peer-recovery, recovery codes, settings, audit wiring
+
+**Estimated scope:** ~22 files (heaviest task — see `⟂ SPLIT`), 9 endpoints, 5 pages
+**Files touched:**
+- `src/lib/audit.ts` (CREATE)
+- `src/lib/rate-limit.ts` (CREATE)
+- `src/lib/db/migrations/0002_rate_limits.sql` (CREATE)
+- `src/lib/record-event.ts` (MODIFY — audit on 3 accepted creates)
+- `src/app/api/feeds/[id]/route.ts` (MODIFY — audit PATCH/DELETE)
+- `src/app/api/diapers/[id]/route.ts` (MODIFY — audit PATCH/DELETE)
+- `src/middleware.ts` (MODIFY — CSRF exemptions for no-session routes)
 - `src/app/api/invites/route.ts` (CREATE)
 - `src/app/api/invites/[token]/accept/route.ts` (CREATE)
 - `src/app/api/access-links/route.ts` (CREATE)
-- `src/app/api/recovery-code/rotate/route.ts` (CREATE)
-- `src/app/api/recovery/redeem/route.ts` (CREATE)
 - `src/app/api/caregivers/route.ts` (CREATE)
 - `src/app/api/caregivers/[user_id]/revoke/route.ts` (CREATE)
 - `src/app/api/caregivers/transfer-ownership/route.ts` (CREATE)
-- `src/lib/recovery-code.ts` (CREATE — extract from Phase 1's `lib/session.ts`)
-- `src/lib/audit.ts` (CREATE)
-- `src/lib/record-event.ts` (MODIFY — add `writeAudit` call inside transaction)
-- `src/app/api/feeds/[id]/route.ts` (MODIFY — audit on PATCH/DELETE)
-- `src/app/api/diapers/[id]/route.ts` (MODIFY — audit on PATCH/DELETE)
+- `src/app/i/[token]/page.tsx` (CREATE)
+- `src/app/(app)/settings/page.tsx` (CREATE)
+- `src/app/(app)/settings/caregivers/page.tsx` (CREATE)
+- `⟂ SPLIT` (above = pass 2a: invites + caregivers + audit; below = pass 2b: recovery codes)
+- `src/app/api/recovery-code/rotate/route.ts` (CREATE)
+- `src/app/api/recovery/redeem/route.ts` (CREATE)
+- `src/app/(app)/settings/recovery/page.tsx` (CREATE)
+- `src/app/recover/page.tsx` (CREATE)
+- `src/app/recover/success/page.tsx` (CREATE)
+- `test/integration/peer-recovery.test.ts` (CREATE)
+- `test/integration/recovery-code.test.ts` (CREATE)
 
 **Subtasks:**
-- [ ] `src/lib/audit.ts`: `writeAudit(tx, { actor_user_id, household_id, kind, entity_table, entity_id, before, after, ip? })` — INSERT into `event_audit` inside the caller's transaction. Kinds: `feed.created|updated|deleted`, `diaper.created|updated|deleted`, `access_link.issued|redeemed`, `recovery_code.redeemed|rotated`, `caregiver.revoked`, `ownership.transferred`.
-- [ ] Wire `writeAudit` into `recordEvent` (every successful create) and into the existing `/api/feeds/[id]` and `/api/diapers/[id]` PATCH/DELETE handlers from Phase 1.
-- [ ] `POST /api/invites` (owner only): body `{ display_name, role? }`. Generates raw token (32 random bytes base64url), stores `sha256(raw)` in `invites.token_hash`, `expires_at = now() + 7 days`, returns `{ url: ${APP_URL}/i/${raw_token}, expires_at }`. 403 if caller is not owner.
-- [ ] `POST /api/access-links` (any active member): body `{ for_user_id }`. Validates target is co-member of caller's household and no outstanding unaccepted peer-recovery invite exists (DB unique index `invites_active_target_idx` enforces this — handle the conflict cleanly). Inserts `invites` row with `target_user_id = for_user_id`, `expires_at = now() + 24 hours`. Writes audit row `access_link.issued`. Returns `{ url, expires_at }`.
-- [ ] `GET /i/[token]` page: server component. Hash, look up `invites` by `token_hash`. Validate `expires_at > now()` AND `accepted_at IS NULL`. If `target_user_id IS NULL` (new caregiver invite) render "Welcome — your role is {display_name}. Tap to join" with editable display_name. If `target_user_id IS NOT NULL` (peer recovery) render "Welcome back, {display_name}. Tap to sign in on this device." Invalid/expired/used token → friendly error page (don't leak which case).
-- [ ] `POST /api/invites/[token]/accept`: in one `adminDb` transaction (no caller session required):
-  - Re-validate token (hash, expiry, not accepted)
-  - If `target_user_id IS NULL`: INSERT new `users` (display_name from body), INSERT `household_members(role=caregiver)`, mint session for new user
-  - If `target_user_id IS NOT NULL`:
-    - Lookup `created_by`'s role: if `owner` OR `created_by == target_user_id` → `UPDATE sessions SET revoked_at = now() WHERE user_id = target_user_id AND revoked_at IS NULL` (the **revoking** branch)
-    - If `created_by` is caregiver and target is anyone else → do NOT revoke (the **additive** branch)
-    - Mint a fresh session for `target_user_id`
-  - UPDATE `invites SET accepted_at = now(), accepted_by = <target>`
-  - Set the `nt_session` cookie
-  - `writeAudit('access_link.redeemed', { issued_by: created_by, target: target_user_id, revoked_prior: boolean })`
-  - Return `{ ok: true, redirect: '/' }`
-- [ ] `GET /api/caregivers`: returns list of `household_members` joined with `users` for caller's household.
-- [ ] `POST /api/caregivers/[user_id]/revoke` (owner only): `UPDATE sessions SET revoked_at = now() WHERE user_id = $1`. Writes audit row `caregiver.revoked`.
-- [ ] `POST /api/caregivers/transfer-ownership` (owner only): body `{ to_user_id }`. In one transaction: swap roles in `household_members` (caller becomes `caregiver`, target becomes `owner`). Writes audit row `ownership.transferred`.
-- [ ] `src/app/(app)/settings/caregivers/page.tsx`: server-renders the caregiver list. Each row shows display_name, role badge, "logged X times" stat, and three buttons:
-  - "Revoke" (owner only, not on self) — POST `/api/caregivers/[id]/revoke` after confirm modal
-  - "Send new access link" (any member, any *other* member) — POST `/api/access-links` → modal shows the URL with "Copy" + "Share" buttons
-  - "Transfer ownership" (owner only, not on self) — POST `/api/caregivers/transfer-ownership` after a typed-confirmation modal ("You'll lose owner privileges — continue?")
-  Below the list: an "Invite another caregiver" form (owner only) that POSTs `/api/invites` and shows the URL in a copy/share modal.
-- [ ] `POST /api/recovery-code/rotate`: in one transaction, `UPDATE recovery_codes SET rotated_at = now() WHERE user_id = $1 AND rotated_at IS NULL AND used_at IS NULL`, INSERT new row with new code_hash, return the raw code. Shown once.
-- [ ] `src/app/(app)/settings/recovery/page.tsx`: shows whether the user has an active code (no raw display — that's only shown at mint/rotate/redeem) and a "Rotate code" button that calls the route and shows the new code in a "Save this" modal.
-- [ ] `POST /api/recovery/redeem` (no auth, rate-limited): body `{ code }`. Normalize (strip hyphens, uppercase). Hash. Look up `recovery_codes` by `code_hash`. Require `used_at IS NULL AND rotated_at IS NULL`. In one transaction:
-  - `UPDATE recovery_codes SET used_at = now(), used_from_ip = req.ip`
-  - `UPDATE sessions SET revoked_at = now() WHERE user_id = <code.user_id> AND revoked_at IS NULL`
-  - INSERT new session for `<code.user_id>`, set the cookie
-  - INSERT a new `recovery_codes` row (auto-rotate per TECHNICAL_SPEC §4.5.2)
-  - `writeAudit('recovery_code.redeemed', ...)`
-  - Return `{ ok: true, new_recovery_code: <raw> }`
-- [ ] Rate limit `/api/recovery/redeem`: 5 attempts per IP per hour, then 24-hour soft block. Implement as a small Postgres-backed token bucket (table `rate_limits(key text, window_start timestamptz, count int)` — add migration `0002_rate_limits.sql`) OR keep it in-memory if the route is on Edge runtime. Postgres-backed is preferred for correctness under serverless cold starts.
-- [ ] `src/app/recover/page.tsx`: a single form taking the code. On submit POSTs to `/api/recovery/redeem`. On success: redirects to `/recover/success` (a new page rendered inline) showing the new rotated code with the same "Save this" UI from onboarding.
+- [ ] `src/lib/audit.ts`: `writeAudit(tx, { actor_user_id, household_id, kind, entity_table, entity_id, before, after, ip? })` → INSERT `event_audit` inside the caller's tx. Kinds (CLAUDE.md §7): `feed.created|updated|deleted`, `diaper.created|updated|deleted`, `access_link.issued|redeemed`, `recovery_code.redeemed|rotated`, `caregiver.revoked`, `ownership.transferred`. No PII (CLAUDE.md §13) — `before`/`after` are row JSON minus nothing here (rows have no names), but never log raw tokens/codes.
+- [ ] Wire `writeAudit` into `recordEvent`: inside the existing `withUserContext` tx, immediately before each of the **three `accepted`** returns (feed/diaper/mom), `await writeAudit(tx, { actor_user_id: ctx.user_id, household_id: ctx.household_id, kind: '<feed|diaper|mom>.created', entity_table, entity_id: row.id, before: null, after: <inserted row> })`. Do **not** audit `duplicate`/`merged`. Re-fetch the inserted row (or use `.returning()` full row) for `after`.
+- [ ] Wire `writeAudit` into `/api/feeds/[id]` + `/api/diapers/[id]` PATCH (`before`=prev row, `after`=next; recall PATCH already sets `locked_at`) and DELETE (`before`=prev, `after`=null). Same tx as the mutation.
+- [ ] `src/lib/rate-limit.ts`: `consume(tx, key, limit, windowSec) → boolean` token-bucket against `rate_limits`. `0002_rate_limits.sql`: `rate_limits(key text primary key, window_start timestamptz not null, count int not null)`; RLS enabled, no anon/authenticated grants (service path only — it runs in routes that may be pre-session; document the access model in the migration header like §4's RLS block).
+- [ ] `POST /api/invites` (session, **owner only** — also DB-enforced by `invites_owner_new_caregiver_insert`): body `{ display_name, role? }`. Raw token = 32 random bytes base64url; store `sha256`; `expires_at = now()+7d`. Return `{ url: ${APP_URL}/i/${raw}, expires_at }`. 403 if not owner (defense in depth even though RLS also blocks).
+- [ ] `POST /api/access-links` (session, any member): body `{ for_user_id }`. INSERT `invites` with `target_user_id=for_user_id`, `created_by=caller`, `expires_at=now()+24h`. Rely on `invites_active_target_idx` for "one outstanding" — catch the unique violation → friendly 409. `writeAudit('access_link.issued')`. Return `{ url, expires_at }`.
+- [ ] `GET /i/[token]` (server component, no session): hash, look up by `token_hash`, require `expires_at>now() AND accepted_at IS NULL`. `target_user_id IS NULL` → "Welcome — your role is {display_name}. Tap to join" (editable display_name). `target_user_id IS NOT NULL` → "Welcome back, {display_name}. Tap to sign in here." Invalid/expired/used → one generic friendly error (do not leak which case).
+- [ ] `POST /api/invites/[token]/accept` (no caller session; `adminDb` tx): re-validate token. If `target_user_id IS NULL`: INSERT `users`, INSERT `household_members(role=caregiver)`, `mintSession`, set cookie. If `target_user_id IS NOT NULL`: compute `shouldRevokePriorSessions = issuer.role === 'owner' || issuer.user_id === target.user_id` (CLAUDE.md §11.5 — the single load-bearing expression); if true `await revokeAllUserSessions(target_user_id)`; then `mintSession(target_user_id)` + cookie. UPDATE `invites.accepted_at/accepted_by`. `writeAudit('access_link.redeemed', { revoked_prior: boolean })`. Return `{ ok:true, redirect:'/' }`.
+- [ ] `GET /api/caregivers`: `household_members ⋈ users` for caller's household + per-member "logged N" count.
+- [ ] `POST /api/caregivers/[user_id]/revoke` (owner only): `revokeAllUserSessions(user_id)`; `writeAudit('caregiver.revoked')`. Reject self-revoke.
+- [ ] `POST /api/caregivers/transfer-ownership` (owner only): one tx swaps `household_members.role` (caller→caregiver, target→owner). `writeAudit('ownership.transferred')`.
+- [ ] `src/app/(app)/settings/page.tsx` + `settings/caregivers/page.tsx`: server-render member list; per row role badge, "logged N", and buttons — Revoke (owner, not self, confirm modal), Send access link (any member, any *other* member, → modal with copy/share URL), Transfer ownership (owner, not self, typed-confirm). Below: "Invite caregiver" form (owner only).
+- [ ] `⟂ SPLIT` — recovery-code half:
+- [ ] `POST /api/recovery-code/rotate` (session): tx — `UPDATE recovery_codes SET rotated_at=now() WHERE user_id=$1 AND rotated_at IS NULL AND used_at IS NULL`; INSERT new row (`hashRecoveryCode`); `writeAudit('recovery_code.rotated')`; return `{ code: <raw> }` (shown once).
+- [ ] `POST /api/recovery/redeem` (no auth, rate-limited 5/IP/hour + 24h soft block via `rate-limit.ts`): body `{ code }`. `hashRecoveryCode` (normalizes). Look up; require `used_at IS NULL AND rotated_at IS NULL`. tx: set `used_at/used_from_ip`; `revokeAllUserSessions(code.user_id)`; `mintSession` + cookie; INSERT new code row (auto-rotate, §4.5.2); `writeAudit('recovery_code.redeemed')`; return `{ ok:true, new_recovery_code:<raw> }`. Bad code → friendly message with the example format.
+- [ ] `src/app/(app)/settings/recovery/page.tsx`: shows whether an active code exists (no raw display) + "Rotate" → "save this" modal.
+- [ ] `src/app/recover/page.tsx`: single code form → POST redeem → on success redirect `/recover/success`. `src/app/recover/success/page.tsx`: shows the new rotated code with the onboarding "save this" UI.
+- [ ] `src/middleware.ts`: exempt `/api/recovery/redeem` and `/api/invites/[token]/accept` from the `X-Requested-With: fetch` requirement (called from no-session devices); keep the same-origin `Origin` check; bearer routes (`/api/events`,`/api/voice`) remain exempt as today.
+- [ ] `test/integration/peer-recovery.test.ts` (**P0 R10**) + `test/integration/recovery-code.test.ts` — see Testing Strategy. Use the Task 1 harness.
 
 **Details:**
-- All four mutation paths above are state-changing and must include `X-Requested-With: fetch` from the browser. `/api/recovery/redeem` is the exception — it's called from a no-session device, so middleware's CSRF check must explicitly exempt it (or the page submits via a same-origin form, which satisfies the Origin check).
-- The "asymmetric authority" invariant is the highest-impact behavior in this task — verify in code review that the `created_by` → `revoke?` decision is exactly: `revoke = (issuer.role === 'owner') || (issuer.user_id === target.user_id)`.
-- Display the recovery code with hyphens (`K3HM-7TPN-Q9XR-4FBC`) but accept input in any format (strip whitespace, hyphens, case-fold).
+- The asymmetric-authority expression is the single highest-risk line in the project — code review must confirm it is **exactly** `issuer.role === 'owner' || issuer.user_id === target.user_id` (CLAUDE.md §11.5). It is verified by `peer-recovery.test.ts` (Risk R10, "an integration test verifies this").
+- Recovery code: display hyphenated `XXXX-XXXX-XXXX-XXXX`, accept any case/spacing (`normalizeRecoveryCode` already handles it).
+- `/api/invites/[token]/accept` and `/api/recovery/redeem` use `adminDb` only for the no-session writes they must do — this does **not** add a third service-role file (admin.ts is the conduit). Confirm no new `SUPABASE_SERVICE_ROLE_KEY` import is introduced.
 
-**Depends on:** Phase 1 complete.
+**Depends on:** Task 1 green (gate). The two new integration specs here run on Task 1's harness.
 
 **Definition of Done:**
-- Owner mints an invite from `/settings/caregivers`, opens the URL in a different browser → onboarding-like page → tap "Join" → new session + cookie → lands on `/`, sees the same baby's data
-- Owner revokes the new caregiver → their next page load is rejected (cookie revoked)
-- Caregiver-issued peer-recovery link to owner: accepting it creates a NEW session for owner but **does not revoke** owner's existing session (the additive-only invariant)
-- Owner-issued peer-recovery link to caregiver: accepting it creates a new session and **revokes** caregiver's prior sessions
-- Same-user-issued link (self peer-recovery): revokes own prior sessions on accept
-- Recovery code redemption at `/recover` mints a session, revokes priors, returns a fresh rotated code
-- Brute-forcing `/api/recovery/redeem` 6× from one IP returns 429 on attempt 6
-- Every PATCH on a feed writes an `event_audit` row with before/after JSON
-- `pnpm typecheck` and `pnpm lint` pass
+- Owner mints invite → opened in another browser → "Join" → new session + cookie → `/` with the same baby's data
+- Owner revokes caregiver → caregiver's next request 401
+- Caregiver-issued peer-recovery link to owner → owner gets a NEW session, **prior owner session still valid** (additive)
+- Owner-issued link to caregiver → caregiver's prior sessions **revoked**
+- Self-issued link → own priors revoked
+- `/recover` redeem → new session, priors revoked, fresh rotated code shown; 6th attempt/IP/hour → 429; used code → rejected
+- Every feed/diaper create + PATCH + DELETE writes an `event_audit` row with correct before/after
+- `pnpm test:integration` green incl. `peer-recovery.test.ts` (R10) and `recovery-code.test.ts`; `pnpm typecheck` + `pnpm lint` clean
+- No third file references `SUPABASE_SERVICE_ROLE_KEY`
 
 ---
 
-### Task 2: Bearer auth, API tokens, canonical event ingestion for voice, six Siri Shortcuts
+### Task 3: Siri voice — bearer auth + API tokens
 
-**Estimated scope:** ~10 files, 3 endpoints, 1 settings page + 6 Shortcut markdown docs
+**Estimated scope:** ~6 files, 3 endpoints, 1 page, verify 6 existing docs
 **Files touched:**
 - `src/lib/api-token.ts` (CREATE)
-- `src/lib/with-auth.ts` (MODIFY — populate bearer resolver)
-- `src/app/api/tokens/route.ts` (CREATE)
+- `src/lib/with-auth.ts` (MODIFY — fill bearer branch)
+- `src/app/api/tokens/route.ts` (CREATE — POST mint)
+- `src/app/api/tokens/[id]/route.ts` (CREATE — DELETE revoke)
 - `src/app/api/voice/route.ts` (CREATE — legacy adapter)
 - `src/app/(app)/settings/voice/page.tsx` (CREATE)
-- `shortcuts/log-pee.shortcut.md` (CREATE)
-- `shortcuts/log-poop.shortcut.md` (CREATE)
-- `shortcuts/log-dirty-diaper.shortcut.md` (CREATE)
-- `shortcuts/log-formula.shortcut.md` (CREATE)
-- `shortcuts/log-pumped.shortcut.md` (CREATE)
-- `shortcuts/log-nursing.shortcut.md` (CREATE)
+- `shortcuts/*.shortcut.md` + `shortcuts/README.md` (VERIFY — patch only on contract drift; do NOT recreate)
 
 **Subtasks:**
-- [ ] `src/lib/api-token.ts`: `mintApiToken(userId, householdId, label)` → returns raw `{ token, id }`, stores `sha256(token)` in `api_tokens.token_hash`; `verifyApiToken(rawBearer)` → `{ user_id, household_id } | null` (also updates `last_used_at` opportunistically); `revokeApiToken(tokenId)` → `UPDATE ... SET revoked_at = now()`.
-- [ ] `src/lib/with-auth.ts`: complete the bearer path. If `Authorization: Bearer xxx` header present, call `verifyApiToken`. Return `AuthContext { user_id, household_id, source: 'siri_shortcut', auth_method: 'bearer' }`. Session path remains first.
-- [ ] `POST /api/tokens`: body `{ label }`. Auth: session. Mints a token (raw shown once), returns `{ id, token, label }`. `DELETE /api/tokens/[id]`: auth session, sets `revoked_at`. Note: keep token operations under `/api/tokens/[id]` for DELETE; `POST /api/tokens/[id]` returning the raw is OK on creation only.
-- [ ] `POST /api/voice`: legacy adapter. Accepts the old shape `{ action: 'feed' | 'diaper', kind?, side?, duration_min?, volume_oz?, wasted_oz?, pee?, poop?, client_uuid?, occurred_at? }`, translates into an `InboundEvent`, calls `recordEvent`. Generates a `client_uuid` if missing. Returns the canonical `{ ok, event_id, say }` shape. Bearer auth only.
-- [ ] `src/app/(app)/settings/voice/page.tsx`: server-rendered list of caller's existing tokens (label, last_used_at, status). Buttons:
-  - "Generate new token" → posts, then a modal shows the raw value once + "Copy"
-  - "Revoke" next to each token
-  Below: six `shortcuts://import-shortcut/?url=...&name=...` deep links to iCloud-hosted Shortcut files. URL is filled in by `NEXT_PUBLIC_APP_URL` interpolation + the iCloud share URL stored in a constants file (the user uploads the Shortcut files to iCloud and pastes those URLs into env later).
-- [ ] Six Shortcut markdown docs under `shortcuts/`: each one documents the actions in the Shortcut, the URL it POSTs to (`${APP_URL}/api/events`), the headers (`Authorization: Bearer ${API_TOKEN}`, `Content-Type: application/json`, `X-Requested-With: fetch`), the body shape, and the "Show Notification" action that displays the `say` field from the response. The Shortcut is built by hand on the user's iPhone — these markdown files are the recipe and the source of truth, NOT exported `.shortcut` binaries (those get stored in iCloud Drive by the user).
-- [ ] Verify with `curl`:
-  ```bash
-  curl -X POST $APP_URL/api/events \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -H "X-Requested-With: fetch" \
-    -d '{
-      "client_uuid": "...uuid...",
-      "source": "siri_shortcut",
-      "occurred_at": "2026-05-14T20:00:00Z",
-      "event": { "type": "diaper", "pee": true }
-    }'
-  # → { "ok": true, "event_id": "...", "say": "Logged. 3 wet diapers today." }
-  ```
-- [ ] Re-run with the same `client_uuid` → second response is `status: duplicate`, same `say` (the merge-check from Phase 1 Task 3 covers this).
+- [ ] `src/lib/api-token.ts`: `mintApiToken(userId, householdId, label) → { id, token }` (32 bytes base64url, store `sha256`, raw once); `verifyApiToken(rawBearer) → { user_id, household_id } | null` (joins `api_tokens`, `revoked_at IS NULL`, opportunistically bumps `last_used_at`); `revokeApiToken(tokenId)`.
+- [ ] `src/lib/with-auth.ts`: replace `if (authz?.startsWith("bearer ")) return null;` with: parse the token, `verifyApiToken`; on hit return `{ user_id, household_id, source: 'siri_shortcut', auth_method: 'bearer' }`; on miss return null. Session path stays the fallback. Do not move the exported types.
+- [ ] `POST /api/tokens` (session): `{ label }` → mint, return `{ id, token, label }` (raw once). `DELETE /api/tokens/[id]` (session): `revokeApiToken`.
+- [ ] `POST /api/voice` (bearer): accept the legacy shape `{ action:'feed'|'diaper', kind?, side?, duration_min?, volume_oz?, wasted_oz?, pee?, poop?, client_uuid?, occurred_at? }`, translate into an `InboundEvent`, generate `client_uuid` if absent, call `recordEvent`, return canonical `{ ok, event_id, say }`.
+- [ ] `src/app/(app)/settings/voice/page.tsx`: list caller's tokens (label, last_used_at, status) with Generate (modal shows raw once) + Revoke. Below: six `shortcuts://import-shortcut/?url=…&name=…` deep links; the iCloud share URLs come from env/constants the user fills later (interpolate `NEXT_PUBLIC_APP_URL`).
+- [ ] Reconcile `shortcuts/*.shortcut.md` against the **final** `/api/events` contract (headers `Authorization: Bearer`, `Content-Type`, `X-Requested-With: fetch`; body = `InboundEvent.event` discriminated shapes; "Show Notification" reads `say`). They were authored in `1b7f51a` — only patch lines that drifted; if accurate, leave untouched and note "verified, no change".
 
 **Details:**
-- Shortcuts cannot refresh OAuth, which is why we use long-lived hashed bearer tokens that the user can revoke from `/settings/voice` (TECHNICAL_SPEC §4.4).
-- The six Shortcut bodies, in JSON-canonical form (these go in the docs):
-  - Log a pee: `{ type: "diaper", pee: true }`
-  - Log a poop: `{ type: "diaper", poop: true }`
-  - Log a dirty diaper: `{ type: "diaper", pee: true, poop: true }`
-  - Log N oz formula: `{ type: "feed", kind: "formula", volume_oz: <N> }`
-  - Log N oz pumped: `{ type: "feed", kind: "pumped", volume_oz: <N> }`
-  - Log breastfeeding N minutes [side]: `{ type: "feed", kind: "nursing", duration_min: <N>, side: <L|R|B> }`
-- The Shortcut for nursing uses **three separate Shortcuts** in practice (one per side) OR one Shortcut with a `Choose from Menu` action — pick whichever the user finds easier. Document both options in `log-nursing.shortcut.md`.
-- Do NOT build a "smart" Siri parser in Phase 1 or 2; it's an explicitly deferred item per PLAN.md §"Explicitly Deferred".
+- Shortcuts cannot refresh OAuth → long-lived hashed bearer tokens, user-revocable (TECHNICAL_SPEC §4.4).
+- No "smart" Siri parser — explicitly deferred (PLAN.md §"Explicitly Deferred").
 
-**Depends on:** Task 1 (settings layout exists) but does not require Task 1's invite logic to complete — could run in parallel if needed.
+**Depends on:** Task 1 (gate). Independent of Task 2 logic, but `settings/voice` shares the settings layout created in Task 2 — run after Task 2.
 
 **Definition of Done:**
-- `/settings/voice` lets the user mint + copy + revoke API tokens
-- `curl` against `/api/events` with a fresh token returns 200 and a sensible `say`
-- Same `curl` with a wrong token returns 401
-- Same `curl` after revoke returns 401
-- On the user's actual iPhone, "Hey Siri, log a pee" → row in `diaper_events` with `source = 'siri_shortcut'`, Siri reads back today's wet-diaper count
-- "Hey Siri, log 2 ounces formula" → row in `feed_events` with `kind = formula`, Siri reads back the daily total + target range from `lib/targets.ts`
-- "Hey Siri, log breastfeeding 15 minutes left" → row with `kind = nursing`, `side = left`, `duration_min = 15`, `estimated_oz` computed from the nursing-rate-by-age table
+- `/settings/voice` mints/copies/revokes tokens
+- `curl /api/events` with a fresh token → 200 + sensible `say`; wrong token → 401; after revoke → 401
+- Same `client_uuid` twice → second response `status:duplicate`, identical `say` (idempotency carried by `recordEvent`)
+- On a real iPhone: "Hey Siri, log a pee" → `diaper_events` row `source='siri_shortcut'`, Siri reads today's wet count; "log 2 oz formula" → `feed_events` `kind=formula`, reads daily total + target band
+- `shortcuts/` docs match the shipped contract; `pnpm typecheck` + `pnpm lint` clean
 
 ---
 
-### Task 3: History, EventList, IntakeDonut, Supabase Realtime
+### Task 4: Realtime + History + IntakeDonut + Pediatrician PDF
 
-**Estimated scope:** ~7 files, 1 endpoint, 3 components
+**Estimated scope:** ~12 files (upper-bound — see `⟂ SPLIT`), 3 endpoints, 4 components
 **Files touched:**
-- `src/app/(app)/history/page.tsx` (CREATE)
+- `src/lib/day-summary.ts` (MODIFY — add `getRangeSummary`)
+- `src/app/api/summary/route.ts` (MODIFY — `?days=` → `getRangeSummary`)
 - `src/app/api/realtime-token/route.ts` (CREATE)
-- `src/components/EventList.tsx` (CREATE)
-- `src/components/IntakeDonut.tsx` (CREATE)
 - `src/components/RealtimeProvider.tsx` (CREATE)
-- `src/app/(app)/layout.tsx` (MODIFY — mount RealtimeProvider)
-- `src/components/TodayCard.tsx` (MODIFY — render IntakeDonut)
-- `src/app/api/summary/route.ts` (MODIFY — extend to support `?days=7` for history)
-
-**Subtasks:**
-- [ ] In Supabase dashboard (one-time manual step the user performs, document in README): enable Realtime on `feed_events` and `diaper_events`. Verify with the Supabase JS client subscribing to a test channel.
-- [ ] `src/app/api/realtime-token/route.ts`: session-authed GET that returns a short-lived (5-minute) Supabase JWT signed with `SUPABASE_SERVICE_ROLE_KEY` with claims `{ role: 'authenticated', sub: <user_id>, app_metadata: { household_id } }`. Realtime RLS uses these claims via Supabase's standard Realtime policies (no extra policy work needed if the table RLS already filters by household). This route MUST NOT be cached.
-- [ ] `src/components/RealtimeProvider.tsx` (client): on mount, fetches a token from `/api/realtime-token`, creates `createBrowserClient(URL, ANON_KEY)`, subscribes to `household:${householdId}` channel with two `postgres_changes` listeners (one per table, filtered by `baby_id=eq.${babyId}`), and calls `router.refresh()` on any event. Re-fetches the token every 4 minutes. Disconnects on unmount. Wrap children in a `Suspense` boundary so the initial render is not blocked.
-- [ ] `src/app/(app)/layout.tsx`: mount `<RealtimeProvider householdId={...} babyId={...}>` around `{children}`. Pull IDs from the server-resolved session.
-- [ ] `src/components/IntakeDonut.tsx` (server component is fine — Recharts works in client only, so this is a thin client wrapper around a server-fetched data prop): donut showing today's oz split — nursing / pumped / formula — with `wasted_oz` shown as a small grey arc segment. Center label shows total + target band.
-- [ ] `src/components/TodayCard.tsx` modify: replace the stacked-bar placeholder with `<IntakeDonut data={summary.feeds} target={summary.target} />`.
-- [ ] `src/app/api/summary/route.ts` modify: accept `?days=7` (default 1). When `days > 1`, return an array of per-day rollups for the history view.
-- [ ] `src/components/EventList.tsx` (client component): grouped by day, each event row shows time, kind, key fields (oz / side / pee/poop), who logged it ("Mom" / "Dad"), and an inline edit affordance (modal or expandable form that PATCHes `/api/feeds/[id]` or `/api/diapers/[id]`) and a delete button (confirm + DELETE). Optimistic UI.
-- [ ] `src/app/(app)/history/page.tsx`: server component that fetches `/api/summary?days=7` and renders the 7-day rollup at top + EventList below.
-
-**Details:**
-- The dashboard's TodayCard re-renders on Realtime push *because it's a server component* — `router.refresh()` re-runs the server data fetch. No client state to sync.
-- Do NOT use the Supabase anon key + RLS for browser-side direct table queries in Phase 2; all reads go through `/api/summary`. Realtime is the only browser-side Supabase usage.
-- Show "logged by Mom" / "logged by Dad, edited by Mom 2h ago" attribution on each row by joining `event_audit` on the entity. Phase 1 already creates these rows for new events; Phase 2 Task 1 backfilled the PATCH/DELETE audit calls.
-
-**Depends on:** Task 1 (audit rows must be populated for attribution display) and Task 2 (token UI is nearby in settings; not a hard dependency).
-
-**Definition of Done:**
-- Two phones, both logged in (one as Mom, one as Dad). Mom logs a feed from her phone → Dad's TodayCard updates within 2 seconds (no manual refresh)
-- EventList groups events by day, shows "logged by Dad" attribution, allows inline edit + delete with confirm
-- TodayCard donut shows the correct split between nursing / pumped / formula
-- `/history` shows last 7 days with a per-day intake total and the EventList below
-- Disabling Realtime in Supabase (or going offline) does NOT break the dashboard — it just stops auto-refreshing
-
----
-
-### Task 4: Pediatrician PDF export
-
-**Estimated scope:** ~3 files, 1 endpoint, 1 page
-**Files touched:**
+- `src/app/(app)/layout.tsx` (MODIFY/CREATE — mount provider)
+- `src/components/IntakeDonut.tsx` (CREATE)
+- `src/components/TodayCard.tsx` (MODIFY — render donut)
+- `src/components/EventList.tsx` (CREATE)
+- `src/app/(app)/history/page.tsx` (CREATE)
+- `⟂ SPLIT` (above = pass 4a: Realtime + history + donut; below = pass 4b: PDF)
 - `src/components/PediatricianPDF.tsx` (CREATE)
 - `src/app/api/export/pediatrician/route.ts` (CREATE)
 - `src/app/(app)/export/pediatrician/page.tsx` (CREATE)
+- `README.md` (MODIFY — Realtime enable step + multi-caregiver setup)
 
 **Subtasks:**
-- [ ] `src/components/PediatricianPDF.tsx`: `@react-pdf/renderer` document component. Takes `{ baby, household, days: DayRollup[] }`. Renders a single-page (Letter size) PDF:
-  - Header: "Newborn Tracker — {baby.name}, DOB {baby.birth_date}, age {N}d"
-  - Section "Feeding (last 7 days)": small table per day with date, total oz, nursing min, pumped oz, formula oz, target band, color-coded "within / below / above target" pill
-  - Section "Diapers (last 7 days)": small table per day with wet count, dirty count
-  - Section "Notes": flat list of any event notes from the period
-  - Footer: "Generated by Newborn Tracker on {date}. Informational, not medical advice."
-- [ ] `GET /api/export/pediatrician?from=&to=` (session): query the events in the range via `lib/day-window` + `lib/targets`. Render the PDF via `@react-pdf/renderer`'s `renderToStream`. Return as `application/pdf` with `Content-Disposition: attachment; filename="anay-feeding-summary-${from}-to-${to}.pdf"`. Default `from = today - 7 days`, `to = today` if not provided.
-- [ ] `src/app/(app)/export/pediatrician/page.tsx`: server component that renders a preview of the same data (as HTML, mirroring the PDF layout) and a "Download PDF" button that links to `/api/export/pediatrician?from=&to=`. Allow the user to pick a date range (defaults to last 7 days).
+- [ ] `src/lib/day-summary.ts`: add `getRangeSummary(userId, householdId, from: Date, to: Date) → DaySummaryPayload[]` — one entry per logical day, computed by reusing the existing windowing (`getDayWindow`) + `dailyTargetRange`; factor the per-day reducer so `getDaySummary` and `getRangeSummary` share it (no re-derivation, no drift). RLS-bound via `withUserContext`.
+- [ ] `src/app/api/summary/route.ts`: `?days=N` (default 1). N=1 → existing single payload (unchanged shape). N>1 → `getRangeSummary` array.
+- [ ] `src/app/api/realtime-token/route.ts` (session GET, `no-store`): mint a 5-min Supabase JWT with claims `{ role:'authenticated', sub:user_id, app_metadata:{ household_id } }` signed with the Supabase JWT secret. **CHECKPOINT FLAG:** if this requires importing `SUPABASE_SERVICE_ROLE_KEY` it would be a *third* file referencing it (CLAUDE.md §8 caps at 2) — prefer the project JWT secret; if unavoidable, stop and raise with the user before coding.
+- [ ] `src/components/RealtimeProvider.tsx` (client): fetch token, `createClient(URL, ANON_KEY)`, subscribe to `household:${householdId}` with two `postgres_changes` listeners (`feed_events`, `diaper_events`, `filter: baby_id=eq.${babyId}`) → `router.refresh()`. Re-fetch token every 4 min; unsubscribe on unmount; wrap in Suspense so first paint is not blocked.
+- [ ] `src/app/(app)/layout.tsx`: mount `<RealtimeProvider householdId babyId>` around children (IDs from server-resolved session). Create the `(app)` route-group layout if it does not yet exist (Phase 1 left `(app)/log/*` without a group layout).
+- [ ] `src/components/IntakeDonut.tsx` (client wrapper, Recharts): donut of `summary.feeds` nursing/pumped/formula, `wasted_oz` as a small grey arc; center = total + target band. Consumes the existing `DaySummaryPayload.feeds` shape — no new query.
+- [ ] `src/components/TodayCard.tsx`: replace the stacked-bar placeholder with `<IntakeDonut data={summary.feeds} target={summary.target} />`. Keep it a server component; donut is the only client island.
+- [ ] `src/components/EventList.tsx` (client): events grouped by day; row = time, kind, key fields, "logged by Mom/Dad" (+ "edited by … Nh ago" from `event_audit`), inline edit (PATCH `/api/feeds|diapers/[id]`) + delete (confirm). Optimistic UI.
+- [ ] `src/app/(app)/history/page.tsx`: server-fetch `/api/summary?days=7` (or call `getRangeSummary` directly), render 7-day rollup + `EventList`.
+- [ ] `⟂ SPLIT` — PDF half:
+- [ ] `src/components/PediatricianPDF.tsx`: `@react-pdf/renderer` single-page Letter doc — header (baby name/DOB/age), Feeding 7-day table (date, total oz, nursing min, pumped oz, formula oz, target band, within/below/above pill), Diapers 7-day table (wet/dirty), Notes flat list, footer "Informational, not medical advice." **No caregiver attribution. No `mom_events`.**
+- [ ] `GET /api/export/pediatrician?from=&to=` (session): pull range via `getRangeSummary` + notes; `renderToStream`; `application/pdf` + `Content-Disposition: attachment; filename="anay-feeding-summary-<from>-to-<to>.pdf"`. Default last 7 days.
+- [ ] `src/app/(app)/export/pediatrician/page.tsx`: HTML preview mirroring the PDF + date-range picker + "Download PDF" link.
+- [ ] `README.md`: add Supabase Realtime enable SQL, "invite a partner / recover a lost phone / add Siri Shortcuts" sections.
 
 **Details:**
-- Keep the PDF *one page*. Tight margins. Pediatricians scan, they don't read.
-- Do NOT include caregiver attribution in the PDF — pediatrician doesn't need that and it might raise privacy concerns when shared.
-- This is a **free** feature per PLAN.md killer feature #4 — no paywall checks anywhere.
-- Mom-events (medication, mood) are **excluded** from this export by RLS (the `mom_events_self` policy only returns rows authored by the calling user, but more importantly the PDF query just shouldn't read `mom_events` at all — it's the baby's pediatrician, not the mom's GP).
+- TodayCard re-renders on Realtime push because it is a **server component** — `router.refresh()` re-runs the server fetch; no client cache.
+- Realtime is the only browser-side Supabase usage; all reads still go through `getDaySummary`/`getRangeSummary` server-side.
+- PDF stays one page; pediatricians scan. `mom_events` excluded structurally (the query never touches that table) — not merely relying on `mom_events_self`.
 
-**Depends on:** Task 3 (reuses `/api/summary?days=N` shape).
+**Depends on:** Task 1 (gate); Task 2 (audit rows power EventList attribution; settings layout). Task 3 not required.
 
 **Definition of Done:**
-- `/export/pediatrician` renders the HTML preview of last 7 days with feed/diaper rollups + target adherence
-- "Download PDF" produces a 1-page PDF that a pediatrician can read without scrolling
-- Sharing the PDF via iMessage from Safari works (iOS quirk: PDFs served as `application/pdf` with `Content-Disposition: attachment` open in the iOS PDF viewer on tap)
-- Mom-events do NOT appear in the export under any circumstance
+- Two phones, both signed in: one logs a feed → the other's TodayCard updates < 2 s, no manual refresh
+- Going offline does not break the dashboard — it just stops auto-refreshing
+- `/history` shows last 7 days (per-day total) + editable/deletable `EventList` with attribution
+- TodayCard donut shows correct nursing/pumped/formula split + wasted arc
+- `/export/pediatrician` HTML preview + a 1-page PDF a pediatrician reads without scrolling; iMessage-share from Safari opens the iOS PDF viewer
+- `mom_events` never appear in the export
+- No third file references `SUPABASE_SERVICE_ROLE_KEY` (or the user explicitly approved an exception)
+- `pnpm typecheck` + `pnpm lint` + `pnpm build` clean; `pnpm test:integration` still green
 
 ## Testing Strategy
 
-### Test 1: Asymmetric authority for peer recovery (Risk R10, security checklist)
+### Test 1: RLS cross-household isolation (P0, Risk R1) — Task 1
 
-**File:** `src/lib/access-links.test.ts` (create)
+**File:** `test/integration/rls-isolation.test.ts` (create) — **approach: integration (real Postgres, `app_runtime` role)**
 
-Integration test against a real test Postgres (Supabase dev project or local Docker):
+- [ ] User A cannot SELECT B's `feed_events` / `diaper_events` / `weight_events` / `babies` (zero rows)
+- [ ] No `request.user_id` GUC → every household table returns zero
+- [ ] `mom_events_self`: a co-member cannot read another member's `mom_events`; author sees only their own
+- [ ] Harness fails loudly if connected as `postgres`/superuser (RLS would false-pass)
 
-- [ ] Caregiver issues a peer-recovery link to the owner → after acceptance: owner has TWO active sessions (additive); caregiver-issued link did NOT revoke
-- [ ] Owner issues a peer-recovery link to caregiver → after acceptance: caregiver has ONE active session; old caregiver sessions are revoked
-- [ ] User issues a peer-recovery link to themselves → after acceptance: only the new session is active (self-revoking branch)
-- [ ] Caregiver attempts to issue a link with `target_user_id` outside their household → 403
-- [ ] Caregiver attempts to mint an invite with `target_user_id IS NULL` (a "new caregiver" invite) → 403 (only owner may)
+### Test 2: `/api/events` idempotency + merge — Task 1
 
-**Approach:** integration
+**File:** `test/integration/events-idempotency.test.ts` (create) — **integration**
 
-### Test 2: Recovery code redeem flow
+- [ ] Same `(source, client_uuid)` twice → one row, 2nd `status:duplicate`, same `event_id`
+- [ ] Two uuids, same source, 3 min apart → two rows (no same-source merge)
+- [ ] Cross-source within 5 min → `merged`, `corroborating_sources` appended
+- [ ] `locked_at` row is never a merge target
 
-**File:** `src/lib/recovery-code.test.ts` (create)
+### Test 3: Peer-recovery asymmetric authority (P0, Risk R10) — Task 2
 
-- [ ] Onboarding mints exactly one active recovery code per user
-- [ ] Redemption normalizes (handles `K3HM-7TPN-Q9XR-4FBC`, `k3hm7tpnq9xr4fbc`, with/without spaces)
-- [ ] Successful redeem rotates the code, revokes prior sessions, mints new session
-- [ ] 6th attempt from one IP in an hour returns 429
-- [ ] Used code → 401 on second redemption
+**File:** `test/integration/peer-recovery.test.ts` (create) — **integration**
 
-**Approach:** integration
+- [ ] Caregiver issues link to owner → after accept owner has TWO active sessions (additive); not revoked
+- [ ] Owner issues link to caregiver → after accept caregiver has ONE (priors revoked)
+- [ ] Self-issued link → only the new session active
+- [ ] Caregiver issues link with `target_user_id` outside their household → blocked (RLS `invites_peer_recovery_insert` + app 403)
+- [ ] Caregiver attempts a `target_user_id IS NULL` (new-caregiver) invite → blocked (RLS `invites_owner_new_caregiver_insert` + app 403)
 
-### Test 3: Idempotency of `/api/events`
+### Test 4: Recovery-code redeem — Task 2
 
-**File:** `src/app/api/events/route.test.ts` (create)
+**File:** `test/integration/recovery-code.test.ts` (create) — **integration**
 
-- [ ] Same `client_uuid` twice → one row, second response has `status: duplicate`, same `say`
-- [ ] Two distinct `client_uuid` for feeds 3 minutes apart → both rows; the second has `corroborating_sources IS NULL` (5-min merge window means same `client_uuid` would have hit, different uuids don't)
-- [ ] Two distinct `client_uuid` for diapers 1 minute apart with same fields → second is `merged`, `corroborating_sources` updated on the first row
-- [ ] Manual edit (PATCH) on a row sets `locked_at`; next merge-window candidate inserts a new row instead
+- [ ] Onboarding/rotate yields exactly one active code per user
+- [ ] Redeem normalizes `K3HM-7TPN-Q9XR-4FBC` / `k3hm7tpnq9xr4fbc` / spaced input identically
+- [ ] Successful redeem rotates code, revokes priors, mints session
+- [ ] 6th attempt from one IP within the hour → 429; soft-block holds
+- [ ] Used or rotated code → rejected on next attempt
 
-**Approach:** integration
+### Test 5: Manual smoke (PLAN.md §"Verification — After Week 2")
 
-### Test 4: Manual smoke (PLAN.md §"Verification — After Week 2")
-
-- [ ] Partner accepts invite on a second iPhone with their own display name → sees the same baby's events
-- [ ] Owner revokes Dad → Dad's next request 401 → owner mints a fresh invite → Dad re-accepts → back in
-- [ ] Mom's phone "lost" (Safari → clear data); Dad taps "Send new access link" next to Mom in `/settings/caregivers` → URL shared → Mom opens on new device → signed in as Mom with full history → Mom's old phone still works (additive)
-- [ ] Dad's phone "lost"; Mom taps "Send new access link" → Dad opens new link → Dad signed in, old session dead (revoking)
-- [ ] At `/recover`, enter the recovery code from onboarding → land on `/recover/success` with a *new* code displayed
-- [ ] Owner transfers ownership to Dad → Mom can no longer revoke/invite, Dad can
-- [ ] Two iPhones online: Mom logs feed → Dad's dashboard updates within 2s (Realtime)
-- [ ] `/export/pediatrician` → PDF with last 7 days
+- [ ] Partner accepts invite on a 2nd iPhone with their own display name → same baby's events
+- [ ] Owner revokes Dad → Dad 401 → fresh invite → Dad re-accepts → back in
+- [ ] Mom "loses" phone; Dad sends access link → Mom signs in on a new device, full history; Mom's old session still works (additive)
+- [ ] Dad "loses" phone; Mom (owner) sends link → Dad in, old session dead (revoking)
+- [ ] `/recover` with the onboarding code → `/recover/success` with a new code
+- [ ] Owner transfers ownership to Dad → Mom can no longer revoke/invite; Dad can
+- [ ] Two iPhones online: Mom logs feed → Dad's dashboard < 2 s (Realtime)
+- [ ] `/export/pediatrician` → 1-page PDF, last 7 days, no mom data
 
 ## Validation Commands
 
+Run in order after all tasks complete:
+
 ```bash
-# Linting
 pnpm lint
-
-# Type checking
 pnpm typecheck
-
-# Tests
-pnpm test
-
-# Build verification
+pnpm test               # unit project — fast, no DB (must stay 57+ green)
+pnpm test:integration   # real Postgres — RLS R1, idempotency, peer-recovery R10, recovery-code
 pnpm build
-
-# Migration
-pnpm db:migrate
+pnpm db:migrate         # applies 0002_rate_limits.sql
 ```
 
-Manual:
+Per-task gate: after **Task 1**, `pnpm test:integration` must be green before Task 2 begins.
+
+Manual curl (canonical event endpoint, after Task 3):
 
 ```bash
-# Curl smoke test for canonical event endpoint
-TOKEN="..."  # paste the raw token from /settings/voice
-curl -X POST $APP_URL/api/events \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
+TOKEN="..."  # raw token from /settings/voice
+curl -X POST "$APP_URL/api/events" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "X-Requested-With: fetch" \
   -d '{"client_uuid":"'"$(uuidgen)"'","source":"siri_shortcut","occurred_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","event":{"type":"diaper","pee":true}}'
 ```
 
 ## Integration Notes
 
-- **Builds on Phase 1:** No changes to `recordEvent`'s signature — only an internal call to `writeAudit`. The canonical `/api/events` already exists; Phase 2 just populates the bearer resolver and authors the Shortcuts.
-- **Sets up Phase 3:** Realtime is the substrate Phase 3's offline-queue replay listens to (queued events POST to `/api/events`, Realtime propagates them to other devices). PDF + Realtime + multi-caregiver complete the "shippable to family" milestone.
-- **Breaking changes:** None — Phase 1 routes (`/api/feeds`, `/api/diapers`) keep their shape. PATCH/DELETE handlers now write audit rows (additive).
-- **Documentation updates:** Add a "Multi-caregiver setup" section to `README.md` (how to invite a partner, how to recover a lost phone, how to add Siri Shortcuts).
-- **Migration:** Add `0002_rate_limits.sql` if implementing the rate-limit table; otherwise no schema changes — all tables exist from Phase 1's `0001_initial.sql`.
-- **Things NOT done in Phase 2:**
-  - PWA manifest, service worker, "Add to Home Screen" — Phase 3
-  - Offline queue — Phase 3
-  - Growth chart, WHO percentiles, weight settings — Phase 3
-  - Mom tab UI — Phase 3 (`mom_events` table exists; route + UI don't)
-  - Low-pee 8pm banner — Phase 3
-  - Health bridge `GET /api/health-export` — deferred post-MVP per PLAN.md
-  - Alexa/Google adapters, hardware webhooks — deferred per PLAN.md "Explicitly Deferred"
+- **Builds on Phase 1:** `recordEvent`'s signature is unchanged — only an internal `writeAudit` call on the three create paths. `/api/events` already exists; Task 3 only fills the bearer branch and authors `/api/voice`. The 6 Siri docs already exist (`1b7f51a`) — verified, not recreated.
+- **Sets up Phase 3:** Realtime is the substrate Phase 3's offline-queue replay rides on (queued events POST `/api/events`; Realtime propagates). The `(app)` layout created/extended in Task 4 is where the Phase 3 install-prompt and offline banner mount.
+- **Breaking changes:** None. Phase 1 routes keep their shapes. PATCH/DELETE handlers gain an additive audit write. `pnpm test` semantics tighten slightly: `test` becomes the *unit* project (already DB-free in practice); integration is `test:integration`.
+- **Migration:** `0002_rate_limits.sql` is the only schema change — all other tables exist in `0000_loud_leech.sql`. Never edit the merged `0000_*` file.
+- **Build-gate vs. launch-gate:** PRD §9 sets a *launch* trigger ("Phase 1 stable for 30 days, no P0/P1"). That gates public launch, **not** Phase 2 implementation. Per the user's explicit direction, Phase 2 is being *built* now with the RLS pre-flight as the build gate; the 30-day launch criterion is tracked separately and is not a blocker for Tasks 1–4.
+- **Docs correction (not a task):** TECHNICAL_SPEC §13 / CLAUDE.md §12 cite spring-forward `2027-03-08`; the real America/Chicago date is `2027-03-14` and `day-window.test.ts` already uses it. Recommend a one-line doc fix outside this phase.
+- **`SUPABASE_SERVICE_ROLE_KEY` is capped at 2 files** (CLAUDE.md §8). `/api/realtime-token` must not become a third — prefer the JWT secret; Task 4 DoD enforces this and flags the user if unavoidable.
+- **Things NOT done in Phase 2:** PWA manifest / service worker / Add-to-Home-Screen, offline queue, growth chart + WHO percentiles + weight settings, mom-tab UI, low-pee 8pm banner, health-bridge export, Alexa/Google adapters — all Phase 3 or deferred per PLAN.md.
