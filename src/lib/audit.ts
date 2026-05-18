@@ -19,7 +19,8 @@
  *
  * `kind` is one of the CLAUDE.md §7 dotted past-tense audit kinds:
  *   feed.created|updated|deleted, diaper.created|updated|deleted,
- *   mom.created, access_link.issued|redeemed,
+ *   weight.created|updated|deleted, mom.created,
+ *   household.updated, baby.updated, access_link.issued|redeemed,
  *   recovery_code.rotated|redeemed, caregiver.revoked,
  *   ownership.transferred.
  */
@@ -36,7 +37,12 @@ export type AuditKind =
   | "diaper.created"
   | "diaper.updated"
   | "diaper.deleted"
+  | "weight.created"
+  | "weight.updated"
+  | "weight.deleted"
   | "mom.created"
+  | "household.updated"
+  | "baby.updated"
   | "access_link.issued"
   | "access_link.redeemed"
   | "recovery_code.rotated"
