@@ -1,13 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { submitOrQueue } from "@/lib/offline-queue";
-import { cn } from "@/lib/utils";
 
 const QUEUED_MESSAGE = "Saved offline — it'll sync when you're back online.";
 
@@ -23,10 +21,9 @@ function readSay(data: unknown): string {
 }
 
 /**
- * Dashboard quick-actions. The three diaper buttons fire an optimistic POST
- * to /api/diapers without leaving the page; "Log feed" navigates to the full
- * FeedForm. Wired into the dashboard by Task 4 (page.tsx is out of Task 3's
- * file boundary).
+ * One-tap diaper logging: three buttons fire an optimistic (offline-queued)
+ * POST to /api/diapers without leaving the page. Embedded inside LogConsole
+ * as the fastest path; the full forms live alongside it on the same page.
  */
 export function QuickLogBar() {
   const router = useRouter();
@@ -60,42 +57,34 @@ export function QuickLogBar() {
     "flex-1 rounded-full transition-transform motion-safe:hover:-translate-y-0.5";
 
   return (
-    <div className="w-full rounded-lg bg-card p-4 shadow-md ring-1 ring-black/5">
-      <p className="mb-3 font-mono text-xs font-medium uppercase tracking-[0.2em] text-card-foreground/55">
-        Quick log
-      </p>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          className={pillLift}
-          disabled={pending !== null}
-          onClick={() => logDiaper("wet", true, false)}
-        >
-          {pending === "wet" ? "…" : "Wet"}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          className={pillLift}
-          disabled={pending !== null}
-          onClick={() => logDiaper("dirty", false, true)}
-        >
-          {pending === "dirty" ? "…" : "Dirty"}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          className={pillLift}
-          disabled={pending !== null}
-          onClick={() => logDiaper("both", true, true)}
-        >
-          {pending === "both" ? "…" : "Wet + Dirty"}
-        </Button>
-        <Link href="/log/feed" className={cn(buttonVariants(), pillLift)}>
-          Log feed
-        </Link>
-      </div>
+    <div className="flex flex-wrap gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        className={pillLift}
+        disabled={pending !== null}
+        onClick={() => logDiaper("wet", true, false)}
+      >
+        {pending === "wet" ? "…" : "Wet"}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className={pillLift}
+        disabled={pending !== null}
+        onClick={() => logDiaper("dirty", false, true)}
+      >
+        {pending === "dirty" ? "…" : "Dirty"}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className={pillLift}
+        disabled={pending !== null}
+        onClick={() => logDiaper("both", true, true)}
+      >
+        {pending === "both" ? "…" : "Wet + Dirty"}
+      </Button>
     </div>
   );
 }

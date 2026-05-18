@@ -5,7 +5,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { submitOrQueue } from "@/lib/offline-queue";
@@ -51,7 +50,6 @@ export function DiaperForm() {
       toast.success(
         outcome.status === "sent" ? readSay(outcome.data) : QUEUED_MESSAGE,
       );
-      router.push("/");
       router.refresh();
     } catch {
       toast.error("Network hiccup — that diaper wasn't logged. Try again.");
@@ -61,9 +59,7 @@ export function DiaperForm() {
   }
 
   return (
-    <Card className="w-full max-w-md space-y-5 p-6">
-      <h1 className="text-2xl text-card-foreground">Log a diaper</h1>
-
+    <div className="space-y-5">
       <div className="flex gap-3">
         <Button
           type="button"
@@ -104,6 +100,6 @@ export function DiaperForm() {
       >
         {submitting ? "Logging…" : "Log diaper"}
       </Button>
-    </Card>
+    </div>
   );
 }

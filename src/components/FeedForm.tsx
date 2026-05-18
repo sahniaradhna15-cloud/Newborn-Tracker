@@ -8,7 +8,6 @@ import { toast } from "sonner";
 import type { z } from "zod";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -92,7 +91,6 @@ export function FeedForm() {
       toast.success(
         outcome.status === "sent" ? readSay(outcome.data) : QUEUED_MESSAGE,
       );
-      router.push("/");
       router.refresh();
     } catch {
       toast.error("Network hiccup — your feed wasn't logged. Try again.");
@@ -100,9 +98,7 @@ export function FeedForm() {
   };
 
   return (
-    <Card className="w-full max-w-md space-y-5 p-6">
-      <h1 className="text-2xl text-card-foreground">Log a feed</h1>
-
+    <div className="space-y-5">
       <Tabs value={kind} onValueChange={(v) => selectKind(v as FeedKind)}>
         <TabsList className="w-full">
           <TabsTrigger value="nursing" className="flex-1">
@@ -212,6 +208,6 @@ export function FeedForm() {
           {isSubmitting ? "Logging…" : "Log feed"}
         </Button>
       </form>
-    </Card>
+    </div>
   );
 }
