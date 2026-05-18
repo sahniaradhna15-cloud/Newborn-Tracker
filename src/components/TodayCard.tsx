@@ -4,9 +4,11 @@
  * so there is no "use client" and no client state here. Purely presentational
  * and props-driven; the page fetches the summary server-side and passes it in.
  *
- * The donut is Phase 2 (`IntakeDonut`); Phase 1 ships a calm stacked bar.
+ * The intake split is the `IntakeDonut` client island (Phase 2 Task 4) —
+ * the only "use client" leaf under this server card.
  * Never red, never alarmist (CLAUDE.md §11.3) — the dashboard is a quiet glance.
  */
+import { IntakeDonut } from "@/components/IntakeDonut";
 import type { DaySummary } from "@/lib/insights";
 
 function formatOz(value: number): string {
@@ -25,17 +27,8 @@ function formatLastFed(minutesAgo: number | null): string {
   return minutes === 0 ? `Last fed ${hours}h ago` : `Last fed ${hours}h ${minutes}m ago`;
 }
 
-type FeedOzKey = "nursing_oz" | "pumped_oz" | "formula_oz";
-
-const BAR_SEGMENTS: { key: FeedOzKey; label: string; className: string }[] = [
-  { key: "nursing_oz", label: "Nursing", className: "bg-[var(--chart-2)]" },
-  { key: "pumped_oz", label: "Pumped", className: "bg-[var(--chart-4)]" },
-  { key: "formula_oz", label: "Formula", className: "bg-[var(--chart-3)]" },
-];
-
 export function TodayCard({ summary }: { summary: DaySummary }) {
   const { feeds, diapers, target, last_feed_minutes_ago } = summary;
-  const totalForBar = feeds.nursing_oz + feeds.pumped_oz + feeds.formula_oz;
 
   return (
     <section
@@ -56,34 +49,16 @@ export function TodayCard({ summary }: { summary: DaySummary }) {
         {target.weight_oz !== null ? ` · ${formatOz(target.weight_oz)} oz` : ""}
       </p>
 
-      <div className="mt-5">
-        <div className="flex h-3 w-full overflow-hidden rounded-full bg-card-foreground/10">
-          {totalForBar > 0
-            ? BAR_SEGMENTS.map((segment) => {
-                const oz = summary.feeds[segment.key];
-                if (oz <= 0) {
-                  return null;
-                }
-                return (
-                  <div
-                    key={segment.key}
-                    className={segment.className}
-                    style={{ width: `${(oz / totalForBar) * 100}%` }}
-                    aria-hidden="true"
-                  />
-                );
-              })
-            : null}
-        </div>
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-card-foreground/60">
-          {BAR_SEGMENTS.map((segment) => (
-            <span key={segment.key} className="inline-flex items-center gap-1.5">
-              <span className={`size-2 rounded-full ${segment.className}`} aria-hidden="true" />
-              {segment.label} {formatOz(summary.feeds[segment.key])} oz
-            </span>
-          ))}
-        </div>
-      </div>
+      <IntakeDonut
+        feeds={{
+          total_oz: feeds.total_oz,
+          nursing_oz: feeds.nursing_oz,
+          pumped_oz: feeds.pumped_oz,
+          formula_oz: feeds.formula_oz,
+          wasted_oz: feeds.wasted_oz,
+        }}
+        target={{ low_oz: target.low_oz, high_oz: target.high_oz }}
+      />
 
       <div className="mt-5 flex items-center gap-5 text-sm text-card-foreground/80">
         <span>
