@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { DM_Serif_Display, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
+import { InstallPrompt } from "@/components/InstallPrompt";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { QueueReplayProvider } from "@/components/QueueReplayProvider";
 import { Toaster } from "@/components/ui/sonner";
@@ -26,6 +27,16 @@ export const metadata: Metadata = {
   title: "Newborn Tracker",
   description:
     "Track your newborn's feeds, diapers, and weight — and know on glance if today's intake is on target.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Newborn",
+    statusBarStyle: "default",
+  },
+  icons: {
+    icon: "/icons/icon-192.png",
+    apple: "/icons/apple-touch-icon.png",
+  },
 };
 
 export const viewport: Viewport = {
@@ -51,6 +62,7 @@ export default function RootLayout({
         <OfflineBanner />
         <QueueReplayProvider />
         {children}
+        <InstallPrompt />
         <Toaster position="top-center" />
       </body>
     </html>
