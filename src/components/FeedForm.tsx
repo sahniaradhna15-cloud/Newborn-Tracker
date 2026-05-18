@@ -12,12 +12,26 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { submitOrQueue } from "@/lib/offline-queue";
 import { FeedInput } from "@/lib/voice-parser";
 
 type FeedKind = "nursing" | "pumped" | "formula";
 type FeedSide = "left" | "right" | "both";
 type FormIn = z.input<typeof FeedInput>;
 type FormOut = z.output<typeof FeedInput>;
+
+const QUEUED_MESSAGE = "Saved offline — it'll sync when you're back online.";
+
+/** Pull the Siri-readable readout off a successful response, if present. */
+function readSay(data: unknown): string {
+  if (data && typeof data === "object" && "say" in data) {
+    const say = (data as { say?: unknown }).say;
+    if (typeof say === "string" && say.length > 0) {
+      return say;
+    }
+  }
+  return "Logged.";
+}
 
 /** datetime-local <input> wants "YYYY-MM-DDTHH:mm" in local wall time. */
 function isoToLocalInput(iso: string): string {
@@ -70,17 +84,14 @@ export function FeedForm() {
       note: values.note || undefined,
     };
     try {
-      const res = await fetch("/api/feeds", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
+      const outcome = await submitOrQueue("/api/feeds", payload);
+      if (outcome.status === "failed") {
         toast.error("Couldn't log that feed. Check the fields and try again.");
         return;
       }
-      toast.success(data.say ?? "Logged.");
+      toast.success(
+        outcome.status === "sent" ? readSay(outcome.data) : QUEUED_MESSAGE,
+      );
       router.push("/");
       router.refresh();
     } catch {
@@ -90,9 +101,7 @@ export function FeedForm() {
 
   return (
     <Card className="w-full max-w-md space-y-5 p-6">
-      <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-50">
-        Log a feed
-      </h1>
+      <h1 className="text-2xl text-card-foreground">Log a feed</h1>
 
       <Tabs value={kind} onValueChange={(v) => selectKind(v as FeedKind)}>
         <TabsList className="w-full">
@@ -177,7 +186,7 @@ export function FeedForm() {
                 max={20}
                 {...register("wasted_oz")}
               />
-              <p className="text-xs text-stone-500">
+              <p className="text-xs text-card-foreground/55">
                 Tracked separately — not counted toward today&apos;s intake.
               </p>
             </div>

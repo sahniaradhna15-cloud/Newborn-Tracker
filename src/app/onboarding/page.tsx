@@ -59,19 +59,19 @@ export default function OnboardingPage() {
 
   if (recoveryCode) {
     return (
-      <main className="flex flex-1 flex-col items-center justify-center bg-stone-50 px-6 py-12 dark:bg-stone-950">
-        <Card className="w-full max-w-md space-y-5 p-6">
+      <main className="flex flex-1 flex-col items-center justify-center px-6 py-12">
+        <Card className="w-full max-w-md space-y-5 p-6 motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95 motion-safe:duration-500">
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-50">
+            <h1 className="text-2xl text-card-foreground">
               Save your recovery code
             </h1>
-            <p className="text-sm text-stone-600 dark:text-stone-400">
+            <p className="text-sm text-card-foreground/70">
               If you lose your phone before anyone else has joined, this is your
               only way back in. Write it down or save it in a password manager.
               We can&apos;t show it again.
             </p>
           </div>
-          <div className="rounded-lg bg-stone-900 px-4 py-5 text-center font-mono text-2xl tracking-widest text-stone-50 dark:bg-stone-800">
+          <div className="rounded-lg bg-[var(--background)] px-4 py-5 text-center font-mono text-2xl tracking-widest text-[var(--foreground)]">
             {recoveryCode}
           </div>
           <div className="flex gap-3">
@@ -104,12 +104,12 @@ export default function OnboardingPage() {
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center bg-stone-50 px-6 py-12 dark:bg-stone-950">
-      <Card className="w-full max-w-md p-6">
+      <Card className="w-full max-w-md p-6 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-500">
         <div className="mb-5 space-y-1">
-          <p className="text-xs font-medium uppercase tracking-widest text-stone-500">
+          <p className="font-mono text-xs font-medium uppercase tracking-[0.2em] text-card-foreground/55">
             Newborn Tracker
           </p>
-          <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-50">
+          <h1 className="text-2xl text-card-foreground">
             Let&apos;s set up your family
           </h1>
         </div>

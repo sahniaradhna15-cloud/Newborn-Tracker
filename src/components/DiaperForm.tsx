@@ -8,6 +8,20 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { submitOrQueue } from "@/lib/offline-queue";
+
+const QUEUED_MESSAGE = "Saved offline — it'll sync when you're back online.";
+
+/** Pull the Siri-readable readout off a successful response, if present. */
+function readSay(data: unknown): string {
+  if (data && typeof data === "object" && "say" in data) {
+    const say = (data as { say?: unknown }).say;
+    if (typeof say === "string" && say.length > 0) {
+      return say;
+    }
+  }
+  return "Logged.";
+}
 
 export function DiaperForm() {
   const router = useRouter();
@@ -23,23 +37,20 @@ export function DiaperForm() {
     }
     setSubmitting(true);
     try {
-      const res = await fetch("/api/diapers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
-        body: JSON.stringify({
-          client_uuid: crypto.randomUUID(),
-          occurred_at: new Date().toISOString(),
-          pee,
-          poop,
-          note: note || undefined,
-        }),
+      const outcome = await submitOrQueue("/api/diapers", {
+        client_uuid: crypto.randomUUID(),
+        occurred_at: new Date().toISOString(),
+        pee,
+        poop,
+        note: note || undefined,
       });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
+      if (outcome.status === "failed") {
         toast.error("Couldn't log that diaper. Try again.");
         return;
       }
-      toast.success(data.say ?? "Logged.");
+      toast.success(
+        outcome.status === "sent" ? readSay(outcome.data) : QUEUED_MESSAGE,
+      );
       router.push("/");
       router.refresh();
     } catch {
@@ -51,9 +62,7 @@ export function DiaperForm() {
 
   return (
     <Card className="w-full max-w-md space-y-5 p-6">
-      <h1 className="text-xl font-semibold text-stone-900 dark:text-stone-50">
-        Log a diaper
-      </h1>
+      <h1 className="text-2xl text-card-foreground">Log a diaper</h1>
 
       <div className="flex gap-3">
         <Button

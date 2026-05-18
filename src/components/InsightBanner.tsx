@@ -24,12 +24,12 @@ export function InsightBanner({ insights }: { insights: Insight[] }) {
       {insights.map((insight) => (
         <div
           key={insight.kind}
-          className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100"
+          className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 shadow-md ring-1 ring-black/5"
         >
-          <Info className="mt-0.5 size-4 shrink-0 text-amber-500 dark:text-amber-400" aria-hidden="true" />
+          <Info className="mt-0.5 size-4 shrink-0 text-amber-500" aria-hidden="true" />
           <div className="min-w-0">
             <p className="line-clamp-2 text-sm">{insight.text}</p>
-            <p className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/70">{DISCLAIMER}</p>
+            <p className="mt-1 text-xs text-amber-700/80">{DISCLAIMER}</p>
           </div>
         </div>
       ))}
