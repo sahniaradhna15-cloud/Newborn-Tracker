@@ -13,19 +13,21 @@
  * - The `say` readout is computed in a SEPARATE read transaction AFTER commit —
  *   the write path never blocks on the rollup query.
  *
- * Phase-1 stubs (finalized in Task 4 — grep `TODO Task 4`):
- * - nursing `estimated_oz` uses a flat 0.15 oz/min instead of the
- *   age-banded `targets.ts` rate.
- * - the `say` target band is a placeholder, not `dailyTargetRange`.
- * - "today" uses a simple 4am-Chicago day start, not the DST-tested
- *   `getDayWindow`.
+ * Task 4 wired (2026-05-18): nursing `estimated_oz` uses the age-banded
+ * `targets.estimateNursingOz`; the `say` target band uses
+ * `targets.dailyTargetRange`; "today" uses the DST-tested
+ * `day-window.getDayWindow`. America/Chicago + 4am remain module
+ * constants here (per-household timezone becomes dynamic with the
+ * Phase 3 settings page).
  */
 import { and, asc, eq, gte, isNull, lte, ne } from "drizzle-orm";
-import { fromZonedTime, toZonedTime } from "date-fns-tz";
+import { toZonedTime } from "date-fns-tz";
 
 import { db } from "./db/client";
+import { dayNumberSinceBirth, getDayWindow } from "./day-window";
 import { babies, diaperEvents, feedEvents, inboundEvents, momEvents } from "./db/schema";
 import { enqueue } from "./outbox";
+import { dailyTargetRange, estimateNursingOz } from "./targets";
 import type { AuthContext } from "./with-auth";
 import { withUserContext } from "./with-user-context";
 import type { InboundEvent } from "./voice-parser";
@@ -44,7 +46,6 @@ type ResultingTable = "feed_events" | "diaper_events" | "mom_events";
 
 const TZ = "America/Chicago";
 const DAY_START_HOUR = 4;
-const NURSING_OZ_PER_MIN_STUB = 0.15; // TODO Task 4: targets.nursingRateOzPerMin(ageDays)
 const FEED_MERGE_WINDOW_MS = 5 * 60 * 1000;
 
 export function round1(n: number): string {
@@ -52,38 +53,36 @@ export function round1(n: number): string {
 }
 
 /**
- * Phase-1 `estimated_oz`: nursing = minutes × flat rate; bottle = volume − wasted
- * (wasted is tracked but excluded from intake totals). Single source of truth so
- * the insert path and the PATCH recompute cannot drift.
- * TODO Task 4: nursing rate becomes age-banded via targets.nursingRateOzPerMin.
+ * `estimated_oz`: nursing = age-banded `estimateNursingOz`; bottle =
+ * volume − wasted (wasted is tracked but excluded from intake totals).
+ * Single source of truth so the insert path and the PATCH recompute
+ * cannot drift. `ageDays` is the day-of-life at the feed's instant
+ * (ignored for bottle feeds).
  */
 export function estimateFeedOz(input: {
   kind: "nursing" | "pumped" | "formula";
+  ageDays: number;
   duration_min?: number | null;
   volume_oz?: number | null;
   wasted_oz?: number | null;
 }): number {
   if (input.kind === "nursing")
-    return (input.duration_min ?? 0) * NURSING_OZ_PER_MIN_STUB;
+    return estimateNursingOz(input.duration_min ?? 0, input.ageDays);
   return Math.max(0, (input.volume_oz ?? 0) - (input.wasted_oz ?? 0));
 }
 
-/** TODO Task 4: replace with targets.dailyTargetRange(...). Placeholder band. */
-function phase1TargetStub(): { low: number; high: number } {
-  return { low: 14, high: 18 };
+/** Day-of-life (birth day = 1) at `at`, under the module's Chicago/4am policy. */
+export function babyAgeDays(birthDate: Date, at: Date): number {
+  return dayNumberSinceBirth(at, birthDate, TZ, DAY_START_HOUR);
 }
 
 /**
- * TODO Task 4: replace with day-window.getDayWindow (DST-tested).
- * Exported so the feeds/diapers GET routes share one "today" definition
- * until Task 4 centralizes it.
+ * Start of the current logical day — DST-safe; delegates to the P0-tested
+ * `getDayWindow`. Exported so the feeds/diapers GET routes share one
+ * "today" definition.
  */
-export function phase1DayStart(now: Date): Date {
-  const wall = toZonedTime(now, TZ);
-  const start = new Date(wall);
-  start.setHours(DAY_START_HOUR, 0, 0, 0);
-  if (wall.getHours() < DAY_START_HOUR) start.setDate(start.getDate() - 1);
-  return fromZonedTime(start, TZ);
+export function currentDayStart(now: Date): Date {
+  return getDayWindow(now, TZ, DAY_START_HOUR).start;
 }
 
 function isAfter8pmChicago(now: Date): boolean {
@@ -140,18 +139,21 @@ export async function recordEvent(
     }
     const inboundId = ledger[0].id;
 
-    // 2. Resolve baby (default = household's first baby).
-    let babyId = inbound.baby_id;
-    if (!babyId) {
-      const [baby] = await tx
-        .select({ id: babies.id })
-        .from(babies)
-        .where(eq(babies.householdId, ctx.household_id))
-        .orderBy(asc(babies.createdAt))
-        .limit(1);
-      if (!baby) throw new Error("no_baby_for_household");
-      babyId = baby.id;
-    }
+    // 2. Resolve the baby (default = household's first baby) + its birth
+    //    date for the age-banded nursing estimate.
+    const [babyRow] = await tx
+      .select({ id: babies.id, birthDate: babies.birthDate })
+      .from(babies)
+      .where(
+        inbound.baby_id
+          ? eq(babies.id, inbound.baby_id)
+          : eq(babies.householdId, ctx.household_id),
+      )
+      .orderBy(asc(babies.createdAt))
+      .limit(1);
+    if (!babyRow) throw new Error("no_baby_for_household");
+    const babyId = babyRow.id;
+    const feedAgeDays = babyAgeDays(babyRow.birthDate, occurredAt);
 
     const event = inbound.event;
 
@@ -159,9 +161,10 @@ export async function recordEvent(
       // 3. estimated_oz (shared helper — see estimateFeedOz).
       const estimatedOz = estimateFeedOz(
         event.kind === "nursing"
-          ? { kind: "nursing", duration_min: event.duration_min }
+          ? { kind: "nursing", ageDays: feedAgeDays, duration_min: event.duration_min }
           : {
               kind: event.kind,
+              ageDays: feedAgeDays,
               volume_oz: event.volume_oz,
               wasted_oz: event.wasted_oz,
             },
@@ -321,20 +324,25 @@ async function buildSay(
   eventId: string,
 ): Promise<string> {
   const now = new Date();
-  const dayStart = phase1DayStart(now);
+  const dayStart = currentDayStart(now);
   const event = inbound.event;
 
   return withUserContext(ctx.user_id, async (tx) => {
     if (event.type === "mom") return `Logged ${event.kind}.`;
 
     const [baby] = await tx
-      .select({ id: babies.id })
+      .select({
+        id: babies.id,
+        birthDate: babies.birthDate,
+        birthWeightOz: babies.birthWeightOz,
+        currentWeightOz: babies.currentWeightOz,
+      })
       .from(babies)
       .where(eq(babies.householdId, ctx.household_id))
       .orderBy(asc(babies.createdAt))
       .limit(1);
     const babyId = inbound.baby_id ?? baby?.id;
-    if (!babyId) return "Logged.";
+    if (!babyId || !baby) return "Logged.";
 
     if (event.type === "diaper") {
       const rows = await tx
@@ -365,7 +373,15 @@ async function buildSay(
       Math.round(
         rows.reduce((sum, r) => sum + Number(r.estimatedOz), 0) * 10,
       ) / 10;
-    const { low, high } = phase1TargetStub();
+    const currentWeightOz =
+      baby.currentWeightOz === null ? null : Number(baby.currentWeightOz);
+    const birthWeightOz =
+      baby.birthWeightOz === null ? (currentWeightOz ?? 0) : Number(baby.birthWeightOz);
+    const { lowOz: low, highOz: high } = dailyTargetRange({
+      ageDays: babyAgeDays(baby.birthDate, now),
+      currentWeightOz,
+      birthWeightOz,
+    });
     void eventId;
 
     let say =

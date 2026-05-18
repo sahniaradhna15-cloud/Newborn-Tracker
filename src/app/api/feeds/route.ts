@@ -14,7 +14,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { desc, eq, gte } from "drizzle-orm";
 
 import { feedEvents } from "@/lib/db/schema";
-import { phase1DayStart, recordEvent } from "@/lib/record-event";
+import { currentDayStart, recordEvent } from "@/lib/record-event";
 import { InboundEvent } from "@/lib/voice-parser";
 import { withAuth } from "@/lib/with-auth";
 import { withUserContext } from "@/lib/with-user-context";
@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
   if (!ctx) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
-  const dayStart = phase1DayStart(new Date());
+  const dayStart = currentDayStart(new Date());
   const rows = await withUserContext(ctx.user_id, (tx) =>
     tx
       .select()

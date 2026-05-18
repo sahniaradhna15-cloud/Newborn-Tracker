@@ -13,8 +13,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { feedEvents } from "@/lib/db/schema";
-import { estimateFeedOz, round1 } from "@/lib/record-event";
+import { babies, feedEvents } from "@/lib/db/schema";
+import { babyAgeDays, estimateFeedOz, round1 } from "@/lib/record-event";
 import { withAuth } from "@/lib/with-auth";
 import { withUserContext } from "@/lib/with-user-context";
 
@@ -55,15 +55,24 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       .limit(1);
     if (!existing) return null;
 
+    const [baby] = await tx
+      .select({ birthDate: babies.birthDate })
+      .from(babies)
+      .where(eq(babies.id, existing.babyId))
+      .limit(1);
+    if (!baby) return null;
+
     const kind = existing.kind as "nursing" | "pumped" | "formula";
     const durationMin = p.duration_min ?? existing.durationMin ?? null;
     const volumeOz =
       p.volume_oz ?? (existing.volumeOz != null ? Number(existing.volumeOz) : null);
     const wastedOz =
       p.wasted_oz ?? (existing.wastedOz != null ? Number(existing.wastedOz) : null);
+    const feedOccurredAt = p.occurred_at ? new Date(p.occurred_at) : existing.occurredAt;
 
     const estimatedOz = estimateFeedOz({
       kind,
+      ageDays: babyAgeDays(baby.birthDate, feedOccurredAt),
       duration_min: durationMin,
       volume_oz: volumeOz,
       wasted_oz: wastedOz,
