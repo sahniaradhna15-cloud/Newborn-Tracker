@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { formatInTimeZone } from "date-fns-tz";
-import { getDayWindow, dayNumberSinceBirth } from "./day-window";
+import { getDayWindow, dayNumberSinceBirth, firstInstantOfMonthsBack } from "./day-window";
 
 const CHICAGO = "America/Chicago";
 const HOUR_MS = 3_600_000;
@@ -99,5 +99,31 @@ describe("dayNumberSinceBirth — Anay (DOB 2026-04-23, America/Chicago)", () =>
     const afterRollover = dayNumberSinceBirth(new Date("2026-11-01T10:30:00Z"), dob, CHICAGO, 4); // 04:30 CST Nov 1
     expect(insideRepeat).toBe(noon);
     expect(afterRollover).toBe(noon + 1);
+  });
+});
+
+describe("firstInstantOfMonthsBack — trend-range seed (America/Chicago)", () => {
+  it("monthsBack=0 returns noon on the 1st of the current month", () => {
+    const seed = firstInstantOfMonthsBack(new Date("2026-05-22T15:00:00Z"), CHICAGO, 0);
+    expect(formatInTimeZone(seed, CHICAGO, "yyyy-MM-dd HH:mm")).toBe("2026-05-01 12:00");
+    // Noon on the 1st must sit inside that day's 04:00→04:00 logical window.
+    const window = getDayWindow(seed, CHICAGO, 4);
+    expect(formatInTimeZone(window.start, CHICAGO, "yyyy-MM-dd HH:mm")).toBe("2026-05-01 04:00");
+  });
+
+  it("monthsBack=1 returns the 1st of last month", () => {
+    const seed = firstInstantOfMonthsBack(new Date("2026-05-22T15:00:00Z"), CHICAGO, 1);
+    expect(formatInTimeZone(seed, CHICAGO, "yyyy-MM-dd HH:mm")).toBe("2026-04-01 12:00");
+  });
+
+  it("rolls the year over when stepping back across January", () => {
+    const seed = firstInstantOfMonthsBack(new Date("2026-01-09T15:00:00Z"), CHICAGO, 1);
+    expect(formatInTimeZone(seed, CHICAGO, "yyyy-MM-dd HH:mm")).toBe("2025-12-01 12:00");
+  });
+
+  it("reads the civil month in the zone, not UTC (late-night edge)", () => {
+    // 2026-06-01T02:00:00Z == 2026-05-31 21:00 CDT — still May in Chicago.
+    const seed = firstInstantOfMonthsBack(new Date("2026-06-01T02:00:00Z"), CHICAGO, 0);
+    expect(formatInTimeZone(seed, CHICAGO, "yyyy-MM-dd HH:mm")).toBe("2026-05-01 12:00");
   });
 });

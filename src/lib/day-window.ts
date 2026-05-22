@@ -79,6 +79,36 @@ export function getDayWindow(now: Date, timeZone: string, dayStartHour: number =
 }
 
 /**
+ * An instant that is guaranteed to fall inside the FIRST calendar day of the
+ * month `monthsBack` months before `now`'s month, in `timeZone`. Used to seed
+ * a {@link getRangeSummary} walk for the "this month" / "last month" intake
+ * trend views.
+ *
+ * Returns noon (12:00) local on the 1st, deliberately well clear of both the
+ * 04:00 day-start boundary and the 01:00–03:00 DST transition window, so the
+ * result always lands squarely inside that day's logical window regardless of
+ * the configured day-start hour or any DST flip that month.
+ *
+ * @param now         Any instant (UTC `Date`); only its civil month in `timeZone` is read.
+ * @param timeZone    IANA zone, e.g. "America/Chicago".
+ * @param monthsBack  0 = the 1st of the current month, 1 = the 1st of last month, etc.
+ * @returns A real UTC `Date` inside the target month's first logical day.
+ */
+export function firstInstantOfMonthsBack(now: Date, timeZone: string, monthsBack: number): Date {
+  const { year, month1 } = civilFieldsInZone(now, timeZone);
+
+  // Shift the 1-based month back, rolling the year over as needed.
+  let targetYear = year;
+  let targetMonth = month1 - monthsBack;
+  while (targetMonth <= 0) {
+    targetMonth += 12;
+    targetYear -= 1;
+  }
+
+  return fromZonedTime(wallClockStringAtHour(targetYear, targetMonth, 1, 12), timeZone);
+}
+
+/**
  * Day-of-life for the logical day containing `now`. Birth day = **1**
  * (1-based, matching the plan's "Day 1 / Day 7" language and `targets.ts`).
  *

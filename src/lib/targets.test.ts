@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nursingRateOzPerMin, estimateNursingOz, dailyTargetRange } from "./targets";
+import { nursingRateOzPerMin, estimateNursingOz, dailyTargetRange, intakeRangeForWeek } from "./targets";
 
 const ANAY_BIRTH_WEIGHT_OZ = 109; // CLAUDE.md seed: 6 lb 13 oz
 
@@ -91,6 +91,30 @@ describe("dailyTargetRange — estimated weight & invariants", () => {
         expect(highOz).toBeLessThanOrEqual(32);
         expect(lowOz).toBeGreaterThan(0);
       }
+    }
+  });
+});
+
+describe("intakeRangeForWeek — age-appropriate band (birth-weight estimate)", () => {
+  it("two weeks old (Anay): ~13.6–17.0 oz/day from birth weight", () => {
+    const r = intakeRangeForWeek(2, ANAY_BIRTH_WEIGHT_OZ);
+    expect(r.ageDays).toBe(14);
+    expect(r.lowOz).toBeCloseTo(13.6, 1);
+    expect(r.highOz).toBeCloseTo(17.0, 1);
+  });
+
+  it("four weeks old (Anay): ~15.4–19.2 oz/day (weight climbs ~1 oz/day after day 14)", () => {
+    const r = intakeRangeForWeek(4, ANAY_BIRTH_WEIGHT_OZ);
+    expect(r.ageDays).toBe(28);
+    expect(r.lowOz).toBeCloseTo(15.4, 1);
+    expect(r.highOz).toBeCloseTo(19.2, 1);
+  });
+
+  it("the band climbs week over week", () => {
+    const weeks = [2, 3, 4, 5].map((w) => intakeRangeForWeek(w, ANAY_BIRTH_WEIGHT_OZ));
+    for (let i = 1; i < weeks.length; i++) {
+      expect(weeks[i].lowOz).toBeGreaterThan(weeks[i - 1].lowOz);
+      expect(weeks[i].highOz).toBeGreaterThan(weeks[i - 1].highOz);
     }
   });
 });

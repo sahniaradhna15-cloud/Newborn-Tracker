@@ -1,20 +1,29 @@
 /**
- * `/history` — the last 7 logical days. Server component (CLAUDE.md §3):
- * the 7-day rollup comes from the SHARED {@link getRangeSummary} (same
- * per-day reducer as TodayCard — no drift), and the editable per-event
- * rows + "logged by / edited by" attribution are read RLS-bound here,
- * then handed to the `EventList` client island.
+ * `/history` — the intake trend graph plus the editable last-7-days log.
+ * Server component (CLAUDE.md §3): every per-day total comes from the SHARED
+ * {@link getRangeSummary} (same reducer as TodayCard — no drift), so the
+ * `IntakeTrendChart` bars and the dashboard donut can never disagree.
  *
- * Attribution: `logged_by` → `household_members.display_name`;
- * "edited by" is the actor of the most recent `feed.updated` /
- * `diaper.updated` audit row for that entity (CLAUDE.md §11.4). No PII
- * leaves the server beyond the display names the household already shares.
+ * Two ranges are read here:
+ *  - the TREND (start of last month → now) feeds the chart's Week / This-month
+ *    / Last-month views;
+ *  - the last 7 logical days feed the editable {@link EventList} with per-event
+ *    "logged by / edited by" attribution.
+ *
+ * Attribution: `logged_by` → `household_members.display_name`; "edited by" is
+ * the actor of the most recent `feed.updated` / `diaper.updated` audit row for
+ * that entity (CLAUDE.md §11.4). No PII leaves the server beyond the display
+ * names the household already shares.
  */
 import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { EventList, type EventDayGroup, type EventRow } from "@/components/EventList";
+import { IntakeByAge, type IntakeByAgeRow } from "@/components/IntakeByAge";
+import { IntakeTrendChart } from "@/components/IntakeTrendChart";
 import { getRangeSummary } from "@/lib/day-summary";
+import { intakeRangeForWeek } from "@/lib/targets";
 import {
   babies,
   diaperEvents,
@@ -23,7 +32,7 @@ import {
   households,
   householdMembers,
 } from "@/lib/db/schema";
-import { getDayWindow } from "@/lib/day-window";
+import { firstInstantOfMonthsBack, getDayWindow } from "@/lib/day-window";
 import { getSessionAuthContext } from "@/lib/with-auth";
 import { withUserContext } from "@/lib/with-user-context";
 
@@ -48,13 +57,10 @@ export default async function HistoryPage() {
   if (!auth) redirect("/onboarding");
 
   const now = new Date();
-  const from = new Date(now.getTime() - (HISTORY_DAYS - 1) * 24 * 60 * 60 * 1000);
+  const historyFrom = new Date(now.getTime() - (HISTORY_DAYS - 1) * 24 * 60 * 60 * 1000);
 
-  const range = await getRangeSummary(auth.user_id, auth.household_id, from, now);
-  if (!range) redirect("/onboarding");
-
-  const timeZone = range.baby.timeZone;
-
+  // Read the household (for its timezone), baby, and the editable last-7-days
+  // detail rows in one RLS-bound transaction.
   const detail = await withUserContext(auth.user_id, async (tx) => {
     const [household] = await tx
       .select()
@@ -68,7 +74,7 @@ export default async function HistoryPage() {
       .limit(1);
     if (!household || !baby) return null;
 
-    const firstWindow = getDayWindow(from, household.timezone, household.dayStartHour);
+    const firstWindow = getDayWindow(historyFrom, household.timezone, household.dayStartHour);
     const lastWindow = getDayWindow(now, household.timezone, household.dayStartHour);
 
     const feedRows = await tx
@@ -124,6 +130,14 @@ export default async function HistoryPage() {
 
   if (!detail) redirect("/onboarding");
 
+  const timeZone = detail.household.timezone;
+
+  // The trend spans the 1st of last month → now, so the chart's "This month"
+  // and "Last month" tabs always have a full calendar month to draw.
+  const trendFrom = firstInstantOfMonthsBack(now, timeZone, 1);
+  const trend = await getRangeSummary(auth.user_id, auth.household_id, trendFrom, now);
+  if (!trend) redirect("/onboarding");
+
   const nameByUser = new Map<string, string>();
   for (const m of detail.members) {
     nameByUser.set(m.userId, m.displayName ?? "a caregiver");
@@ -173,8 +187,37 @@ export default async function HistoryPage() {
     }),
   ];
 
-  // Group events into the same logical-day windows as the rollup.
-  const groups: EventDayGroup[] = range.days.map((day) => {
+  // "By age" reference: per week of life, the age-appropriate daily band next
+  // to his average intake on the days actually logged that week. The band uses
+  // birth weight (age estimate), not today's weight, so the newborn weeks are
+  // judged against his size *then* — not now.
+  const birthWeightOz = detail.baby.birthWeightOz === null ? 109 : Number(detail.baby.birthWeightOz);
+  const currentAgeDays = trend.days[0]?.target.age_days ?? 1;
+  const currentWeek = Math.max(1, Math.ceil(currentAgeDays / 7));
+  const lastWeekToShow = Math.max(5, currentWeek + 1); // always cover weeks 2–5, plus a peek at next week
+  const byAgeRows: IntakeByAgeRow[] = [];
+  for (let week = 1; week <= lastWeekToShow; week++) {
+    const band = intakeRangeForWeek(week, birthWeightOz);
+    const loggedDays = trend.days.filter(
+      (d) => d.feeds.count > 0 && d.target.age_days >= (week - 1) * 7 + 1 && d.target.age_days <= week * 7,
+    );
+    const avgOz = loggedDays.length
+      ? Math.round((loggedDays.reduce((sum, d) => sum + d.feeds.total_oz, 0) / loggedDays.length) * 10) / 10
+      : null;
+    byAgeRows.push({
+      weekOfAge: week,
+      ageDays: band.ageDays,
+      lowOz: band.lowOz,
+      highOz: band.highOz,
+      avgOz,
+      isCurrent: week === currentWeek,
+      isUpcoming: week > currentWeek,
+    });
+  }
+
+  // Group the editable events into the last 7 logical-day windows (the newest
+  // 7 entries of the trend, which uses the identical windowing).
+  const groups: EventDayGroup[] = trend.days.slice(0, HISTORY_DAYS).map((day) => {
     const start = new Date(day.day_start);
     const end = new Date(day.day_end);
     const dayEvents = events
@@ -191,44 +234,34 @@ export default async function HistoryPage() {
   });
 
   return (
-    <main className="mx-auto w-full max-w-md flex-1 px-4 py-8">
-      <h1 className="mb-1 text-2xl text-foreground">Last 7 days</h1>
-      <p className="mb-6 text-sm text-stone-600 dark:text-stone-400">
-        Per-day totals and every entry. Tap Edit to correct a feed or diaper.
-      </p>
+    <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-8">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <Link
+          href="/"
+          className="inline-flex items-center text-sm text-foreground/70 transition-colors hover:text-foreground"
+        >
+          ← Dashboard
+        </Link>
+        <Link
+          href="/import"
+          className="inline-flex items-center text-sm text-foreground/70 transition-colors hover:text-foreground"
+        >
+          Import past notes →
+        </Link>
+      </div>
+      <h1 className="mb-1 text-2xl text-foreground">History</h1>
+      <p className="mb-6 text-sm text-foreground/60">How much {detail.baby.name} drank over time, vs. the healthy range for his age.</p>
 
-      <section className="mb-8 space-y-2">
-        {range.days.map((day) => {
-          const within =
-            day.feeds.total_oz >= day.target.low_oz && day.feeds.total_oz <= day.target.high_oz;
-          return (
-            <div
-              key={day.day_start}
-              className="flex items-center justify-between gap-3 rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-800 dark:bg-stone-950"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm text-foreground">{dayLabel(day.day_start, timeZone)}</p>
-                <p className="text-xs text-stone-500">
-                  {day.feeds.total_oz} oz · {day.diapers.pee_count} wet · {day.diapers.poop_count} dirty
-                </p>
-              </div>
-              <span
-                className={
-                  within
-                    ? "shrink-0 rounded-full bg-stone-100 px-2.5 py-1 text-xs text-stone-600 dark:bg-stone-900 dark:text-stone-400"
-                    : "shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-                }
-              >
-                target {day.target.low_oz}–{day.target.high_oz}
-              </span>
-            </div>
-          );
-        })}
-      </section>
+      <IntakeTrendChart days={trend.days} timeZone={timeZone} />
 
+      <h2 className="mt-10 mb-3 text-lg text-foreground">What he needs by age</h2>
+      <IntakeByAge babyName={detail.baby.name} rows={byAgeRows} />
+
+      <h2 className="mt-10 mb-1 text-lg text-foreground">Recent entries</h2>
+      <p className="mb-4 text-sm text-foreground/60">The last 7 days. Tap Edit to correct a feed or diaper.</p>
       <EventList groups={groups} timeZone={timeZone} />
 
-      <p className="mt-8 border-t border-stone-200 pt-3 text-xs text-stone-500 dark:border-stone-800">
+      <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
         Not medical advice. Call your pediatrician if you&apos;re worried.
       </p>
     </main>

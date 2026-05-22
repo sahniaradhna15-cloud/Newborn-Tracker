@@ -114,3 +114,23 @@ export function dailyTargetRange(input: {
 
   return { lowOz: roundToOneDecimal(lowOz), highOz: roundToOneDecimal(Math.max(lowOz, highOz)) };
 }
+
+/**
+ * The age-appropriate daily intake band for a baby "N weeks old", computed
+ * from birth weight via the null-weight age estimate — so it reflects his size
+ * *at that age*, not a current measured weight. Powers the "what he needs by
+ * age" reference, where comparing each past week against today's weight would
+ * overstate the band for the newborn weeks.
+ *
+ * @param weekOfAge      1 = first week, 2 = "two weeks old", …
+ * @param birthWeightOz  Birth weight in oz.
+ * @returns `{ weekOfAge, ageDays, lowOz, highOz }` at the end of that week.
+ */
+export function intakeRangeForWeek(
+  weekOfAge: number,
+  birthWeightOz: number,
+): { weekOfAge: number; ageDays: number; lowOz: number; highOz: number } {
+  const ageDays = weekOfAge * 7;
+  const { lowOz, highOz } = dailyTargetRange({ ageDays, currentWeightOz: null, birthWeightOz });
+  return { weekOfAge, ageDays, lowOz, highOz };
+}

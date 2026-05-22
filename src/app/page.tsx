@@ -1,13 +1,17 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { InsightBanner } from "@/components/InsightBanner";
+import { IntakeTrendMini } from "@/components/IntakeTrendMini";
 import { LogConsole } from "@/components/LogConsole";
 import { RealtimeProvider } from "@/components/RealtimeProvider";
 import { TodayCard } from "@/components/TodayCard";
 import { resolveActiveBabyId } from "@/lib/active-baby";
-import { getDaySummary } from "@/lib/day-summary";
+import { getDaySummary, getRangeSummary } from "@/lib/day-summary";
 import { computeInsights } from "@/lib/insights";
 import { getSessionAuthContext } from "@/lib/with-auth";
+
+const TREND_MINI_DAYS = 7;
 
 /**
  * The whole app on one page. Server Component: the summary is fetched
@@ -35,6 +39,9 @@ export default async function Home() {
   const babyId = await resolveActiveBabyId(auth.user_id, auth.household_id);
   const insights = computeInsights(data.summary, data.baby, now);
 
+  const trendFrom = new Date(now.getTime() - (TREND_MINI_DAYS - 1) * 24 * 60 * 60 * 1000);
+  const trend = await getRangeSummary(auth.user_id, auth.household_id, trendFrom, now);
+
   const dateLabel = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     month: "long",
@@ -53,12 +60,21 @@ export default async function Home() {
             {dateLabel}
           </p>
         </div>
+        <nav className="flex shrink-0 items-center gap-4 text-sm">
+          <Link href="/history" className="text-foreground/70 transition-colors hover:text-foreground">
+            Trends
+          </Link>
+          <Link href="/growth" className="text-foreground/70 transition-colors hover:text-foreground">
+            Growth
+          </Link>
+        </nav>
       </header>
 
       <div className="grid gap-4 lg:grid-cols-12 lg:items-start">
         <div className="flex flex-col gap-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-500 motion-safe:delay-100 lg:col-span-7">
           <TodayCard summary={data.summary} />
           <InsightBanner insights={insights} />
+          {trend ? <IntakeTrendMini days={trend.days} timeZone={data.baby.timeZone} /> : null}
         </div>
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-500 motion-safe:delay-200 lg:col-span-5">
           <LogConsole />
