@@ -2,7 +2,9 @@ import { redirect } from "next/navigation";
 
 import { InsightBanner } from "@/components/InsightBanner";
 import { LogConsole } from "@/components/LogConsole";
+import { RealtimeProvider } from "@/components/RealtimeProvider";
 import { TodayCard } from "@/components/TodayCard";
+import { resolveActiveBabyId } from "@/lib/active-baby";
 import { getDaySummary } from "@/lib/day-summary";
 import { computeInsights } from "@/lib/insights";
 import { getSessionAuthContext } from "@/lib/with-auth";
@@ -12,8 +14,15 @@ import { getSessionAuthContext } from "@/lib/with-auth";
  * server-side via the shared `getDaySummary` (no client round-trip), then a
  * two-column bento puts the at-a-glance TodayCard + insights beside the
  * always-present LogConsole — no route-hopping to log. The forms call
- * router.refresh() so this server component re-renders in place. Realtime
- * refresh lands in Phase 2.
+ * router.refresh() so this server component re-renders in place.
+ *
+ * The dashboard lives at `/`, OUTSIDE the `(app)` route group, so
+ * `(app)/layout.tsx`'s `RealtimeProvider` never wrapped it — the main
+ * screen did not auto-sync across devices. We mount the provider here
+ * directly (same shared `resolveActiveBabyId` the group layout uses) so a
+ * feed logged on one phone refreshes the other's dashboard in ~2s. The
+ * provider renders children immediately and does all socket work in a
+ * post-hydration effect, so first paint is never blocked.
  */
 export default async function Home() {
   const auth = await getSessionAuthContext();
@@ -23,6 +32,7 @@ export default async function Home() {
   const data = await getDaySummary(auth.user_id, auth.household_id, now);
   if (!data) redirect("/onboarding");
 
+  const babyId = await resolveActiveBabyId(auth.user_id, auth.household_id);
   const insights = computeInsights(data.summary, data.baby, now);
 
   const dateLabel = new Intl.DateTimeFormat("en-US", {
@@ -32,7 +42,7 @@ export default async function Home() {
     timeZone: data.baby.timeZone,
   }).format(now);
 
-  return (
+  const content = (
     <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:px-6 lg:py-10">
       <header className="mb-6 flex items-end justify-between gap-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500">
         <div>
@@ -55,5 +65,12 @@ export default async function Home() {
         </div>
       </div>
     </main>
+  );
+
+  if (!babyId) return content;
+  return (
+    <RealtimeProvider householdId={auth.household_id} babyId={babyId}>
+      {content}
+    </RealtimeProvider>
   );
 }

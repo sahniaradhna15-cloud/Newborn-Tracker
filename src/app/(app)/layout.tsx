@@ -17,23 +17,9 @@
  * the redirect — so `/log/*`, `/settings/*`, and `/mom` keep working
  * exactly as before.
  */
-import { eq } from "drizzle-orm";
-
 import { RealtimeProvider } from "@/components/RealtimeProvider";
-import { babies } from "@/lib/db/schema";
+import { resolveActiveBabyId } from "@/lib/active-baby";
 import { getSessionAuthContext } from "@/lib/with-auth";
-import { withUserContext } from "@/lib/with-user-context";
-
-async function resolveActiveBabyId(userId: string, householdId: string): Promise<string | null> {
-  return withUserContext(userId, async (tx) => {
-    const [row] = await tx
-      .select({ id: babies.id })
-      .from(babies)
-      .where(eq(babies.householdId, householdId))
-      .limit(1);
-    return row?.id ?? null;
-  });
-}
 
 export default async function AppGroupLayout({ children }: { children: React.ReactNode }) {
   const auth = await getSessionAuthContext();
