@@ -37,7 +37,7 @@ function isRequestedWithExempt(path: string): boolean {
   return /^\/api\/invites\/[^/]+\/accept$/.test(path);
 }
 
-export function middleware(req: NextRequest): NextResponse {
+export function proxy(req: NextRequest): NextResponse {
   if (!MUTATING.has(req.method)) return NextResponse.next();
 
   const path = req.nextUrl.pathname;
@@ -46,14 +46,28 @@ export function middleware(req: NextRequest): NextResponse {
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const allowedOrigin = appUrl ? new URL(appUrl).origin : req.nextUrl.origin;
+  // Accept the configured public origin, the request's own origin, AND the
+  // forwarded host (the public host a tunnel/proxy serves under). A request
+  // whose Origin equals the host it was served from is by definition
+  // same-origin (not a cross-site CSRF), so each of these is safe to accept —
+  // and together they keep localhost dev and a rotating Cloudflare tunnel URL
+  // working without re-editing NEXT_PUBLIC_APP_URL each time.
+  const allowedOrigins = new Set<string>([req.nextUrl.origin]);
+  if (appUrl) {
+    allowedOrigins.add(new URL(appUrl).origin);
+  }
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  if (forwardedHost) {
+    const proto = req.headers.get("x-forwarded-proto")?.split(",")[0].trim() ?? "https";
+    allowedOrigins.add(`${proto}://${forwardedHost.split(",")[0].trim()}`);
+  }
 
   const origin = req.headers.get("origin");
   const requestedWith = req.headers.get("x-requested-with");
   const requestedWithOk =
     isRequestedWithExempt(path) || requestedWith === "fetch";
 
-  if (origin !== allowedOrigin || !requestedWithOk) {
+  if (origin === null || !allowedOrigins.has(origin) || !requestedWithOk) {
     return NextResponse.json(
       {
         ok: false,

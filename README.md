@@ -78,7 +78,7 @@ src/
 ├── components/      # UI components (shadcn primitives under components/ui)
 ├── lib/             # Domain logic (record-event, targets, day-window, insights, ...)
 │   └── db/          # Drizzle schema + client + migrations + seed
-├── middleware.ts    # CSRF + session resolve (Phase 1 Task 2)
+├── proxy.ts        # CSRF + session resolve (Next 16 proxy convention; was middleware.ts)
 ```
 
 See [`CLAUDE.md` §3](./CLAUDE.md) for the load-bearing architecture rules — particularly that `recordEvent()` is the single write path.

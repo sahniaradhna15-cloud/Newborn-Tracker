@@ -2,7 +2,9 @@ import type { NextConfig } from "next";
 import withSerwistInit from "@serwist/next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Local dev only: lets a phone reach the dev server's client assets through
+  // the Cloudflare quick-tunnel host. Safe to remove once we deploy.
+  allowedDevOrigins: ["perceived-south-echo-her.trycloudflare.com"],
 };
 
 const withSerwist = withSerwistInit({

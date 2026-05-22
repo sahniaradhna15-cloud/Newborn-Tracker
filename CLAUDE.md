@@ -80,7 +80,7 @@ These are decided. Do not introduce alternatives without an explicit user-facing
 │   │   ├── with-auth.ts, with-user-context.ts  # request scoping + RLS
 │   │   ├── audit.ts, outbox.ts           # cross-cutting
 │   │   ├── offline-queue.ts              # IndexedDB queue (Phase 3)
-│   ├── middleware.ts                     # CSRF + Origin + session resolve
+│   ├── proxy.ts                          # CSRF + Origin + session resolve (Next 16 proxy convention; renamed from middleware.ts)
 ├── public/icons/                         # PWA icons (Phase 3)
 └── drizzle.config.ts, next.config.ts, tailwind.config.ts, package.json, .env.example
 ```
