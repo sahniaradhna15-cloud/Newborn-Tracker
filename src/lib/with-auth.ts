@@ -27,7 +27,8 @@ export type SourceChannel =
   | "siri_shortcut"
   | "apple_watch"
   | "web"
-  | "health_bridge";
+  | "health_bridge"
+  | "import";
 
 export type AuthContext = {
   user_id: string;

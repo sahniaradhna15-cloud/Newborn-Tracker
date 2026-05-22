@@ -1,0 +1,215 @@
+/**
+ * `POST /api/import` (session) — bulk backfill of a parent's free-form daily
+ * notes into feed & diaper rows.
+ *
+ * The messy text → events translation lives in the pure {@link parseNotes}
+ * (lib/notes-import.ts), so this route is thin: it resolves the baby's
+ * timezone/DOB/weights, parses, and — on commit — feeds each parsed event
+ * through the ONE write path {@link recordEvent} (CLAUDE.md §3). It never
+ * INSERTs domain rows directly.
+ *
+ * Two modes, same parser (so the preview can never disagree with the commit):
+ *   - `commit: false` → preview: per-day rollup + skipped/warnings, no writes.
+ *   - `commit: true`  → writes via recordEvent. Idempotent: client_uuid is a
+ *     deterministic UUIDv5 of each event's dedupeKey, so re-importing the same
+ *     notes is a no-op (recordEvent returns `duplicate`).
+ *
+ * Source channel is `import` (added to the InboundEvent enum); it is stored on
+ * every resulting row so an import is auditable and distinguishable from PWA
+ * entries.
+ */
+import { createHash } from "node:crypto";
+
+import { asc, eq } from "drizzle-orm";
+import { NextResponse, type NextRequest } from "next/server";
+
+import { babies, households } from "@/lib/db/schema";
+import { parseNotes, type ImportEvent } from "@/lib/notes-import";
+import { recordEvent, type AuthContext } from "@/lib/record-event";
+import { InboundEvent } from "@/lib/voice-parser";
+import { getSessionAuthContext } from "@/lib/with-auth";
+import { withUserContext } from "@/lib/with-user-context";
+
+const MAX_RAW_CHARS = 200_000;
+const UUID_NAMESPACE_HEX = "a3f1e2d45b6c47899abcde0123456789"; // fixed namespace for import dedupe
+
+/** Deterministic UUIDv5 of `name` — same notes ⇒ same client_uuid ⇒ idempotent re-import. */
+function deterministicUuid(name: string): string {
+  const hash = createHash("sha1")
+    .update(Buffer.from(UUID_NAMESPACE_HEX, "hex"))
+    .update(Buffer.from(name, "utf8"))
+    .digest();
+  const b = Uint8Array.prototype.slice.call(hash, 0, 16);
+  b[6] = (b[6] & 0x0f) | 0x50; // version 5
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC variant
+  const hex = Buffer.from(b).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Lift one parsed import event into the canonical wire shape for recordEvent. */
+function toInbound(e: ImportEvent): unknown {
+  const base = {
+    client_uuid: deterministicUuid(e.dedupeKey),
+    source: "import" as const,
+    occurred_at: e.occurredAtIso,
+    note: e.rawLine.slice(0, 500),
+  };
+  if (e.type === "feed") {
+    // Breast feeds carry the user's exact converted ounces, so they are stored
+    // as a measured (pumped) volume rather than a duration the app would re-estimate.
+    return { ...base, event: { type: "feed", kind: e.kind === "breast" ? "pumped" : "formula", volume_oz: e.amount.oz } };
+  }
+  return { ...base, event: { type: "diaper", pee: e.pee, poop: e.poop } };
+}
+
+export async function POST(req: NextRequest) {
+  const ctx = await getSessionAuthContext();
+  if (!ctx) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+
+  let body: { rawText?: unknown; commit?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
+  }
+
+  const rawText = typeof body.rawText === "string" ? body.rawText : "";
+  const commit = body.commit === true;
+  if (rawText.trim() === "") {
+    return NextResponse.json({ ok: false, error: "empty_notes" }, { status: 400 });
+  }
+  if (rawText.length > MAX_RAW_CHARS) {
+    return NextResponse.json({ ok: false, error: "notes_too_large" }, { status: 413 });
+  }
+
+  const baby = await withUserContext(ctx.user_id, async (tx) => {
+    const [household] = await tx.select().from(households).where(eq(households.id, ctx.household_id)).limit(1);
+    const [row] = await tx
+      .select()
+      .from(babies)
+      .where(eq(babies.householdId, ctx.household_id))
+      .orderBy(asc(babies.createdAt))
+      .limit(1);
+    if (!household || !row) return null;
+    return {
+      dobIso: row.birthDate.toISOString(),
+      timeZone: household.timezone,
+      dayStartHour: household.dayStartHour,
+      defaultYear: row.birthDate.getUTCFullYear(),
+      birthWeightOz: row.birthWeightOz === null ? null : Number(row.birthWeightOz),
+      currentWeightOz: row.currentWeightOz === null ? null : Number(row.currentWeightOz),
+    };
+  });
+
+  if (!baby) {
+    return NextResponse.json({ ok: false, error: "no_active_baby" }, { status: 404 });
+  }
+
+  let parsed: ReturnType<typeof parseNotes>;
+  try {
+    parsed = parseNotes(rawText, baby);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "import_parse_failed",
+        route: "/api/import",
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        user_id: ctx.user_id,
+        fix_suggestion:
+          "parseNotes threw on this input — likely an unhandled date-header or time token. Add the offending line shape to notes-import.test.ts and guard it.",
+      }),
+    );
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+  }
+
+  const counts = {
+    days: parsed.perDay.length,
+    feeds: parsed.events.filter((e) => e.type === "feed").length,
+    diapers: parsed.events.filter((e) => e.type === "diaper").length,
+    skipped: parsed.skipped.length,
+  };
+
+  if (!commit) {
+    console.info(
+      JSON.stringify({
+        event: "import_preview",
+        route: "/api/import",
+        method: "POST",
+        status: "ok",
+        user_id: ctx.user_id,
+        household_id: ctx.household_id,
+        ...counts,
+      }),
+    );
+    return NextResponse.json({
+      ok: true,
+      mode: "preview",
+      perDay: parsed.perDay,
+      skipped: parsed.skipped,
+      warnings: parsed.warnings,
+      counts,
+    });
+  }
+
+  const importCtx: AuthContext = { ...ctx, source: "import" };
+  let accepted = 0;
+  let duplicate = 0;
+  let failed = 0;
+
+  // Write with bounded concurrency. recordEvent is idempotent on
+  // (source, client_uuid), each event is independent, and withUserContext
+  // is transaction-scoped — so concurrent writes are safe. Capped below the
+  // postgres-js pool size (10) to leave headroom for other requests.
+  const CONCURRENCY = 6;
+  const queue = [...parsed.events];
+
+  async function drainQueue(): Promise<void> {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      const candidate = toInbound(next);
+      const valid = InboundEvent.safeParse(candidate);
+      if (!valid.success) {
+        failed += 1;
+        continue;
+      }
+      try {
+        const result = await recordEvent(importCtx, valid.data, { computeSay: false });
+        if (result.status === "duplicate") duplicate += 1;
+        else accepted += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(
+          JSON.stringify({
+            event: "import_event_failed",
+            route: "/api/import",
+            error: error instanceof Error ? error.message : String(error),
+            user_id: importCtx.user_id,
+            fix_suggestion:
+              "Confirm withUserContext bound request.user_id (RLS), the household has a babies row, and the InboundEvent volume/duration bounds (FeedBottle volume_oz ≤ 20) are satisfied.",
+          }),
+        );
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => drainQueue()));
+
+  console.info(
+    JSON.stringify({
+      event: "import_commit",
+      route: "/api/import",
+      method: "POST",
+      status: "ok",
+      user_id: ctx.user_id,
+      household_id: ctx.household_id,
+      accepted,
+      duplicate,
+      failed,
+      ...counts,
+    }),
+  );
+
+  return NextResponse.json({ ok: true, mode: "commit", accepted, duplicate, failed, counts });
+}

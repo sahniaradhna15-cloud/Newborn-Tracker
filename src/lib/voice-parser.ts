@@ -54,7 +54,7 @@ const MomEvent = z.object({
 
 export const InboundEvent = z.object({
   client_uuid: z.uuid(),
-  source: z.enum(["pwa", "siri_shortcut", "apple_watch", "web", "health_bridge"]),
+  source: z.enum(["pwa", "siri_shortcut", "apple_watch", "web", "health_bridge", "import"]),
   source_event_id: z.string().optional(),
   occurred_at: z.iso.datetime(),
   baby_id: z.uuid().optional(),

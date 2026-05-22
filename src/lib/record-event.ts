@@ -98,6 +98,7 @@ function isAfter8pmChicago(now: Date): boolean {
 export async function recordEvent(
   ctx: AuthContext,
   inbound: InboundEvent,
+  options?: { computeSay?: boolean },
 ): Promise<RecordResult> {
   const occurredAt = new Date(inbound.occurred_at);
 
@@ -325,7 +326,9 @@ export async function recordEvent(
     return { kind: "accepted" as const, eventId: row.id };
   });
 
-  const say = await buildSay(ctx, inbound, written.eventId);
+  // Bulk import doesn't use the Siri-style readout; skipping it halves the
+  // per-event transaction count (the say is a separate post-commit read).
+  const say = options?.computeSay === false ? "" : await buildSay(ctx, inbound, written.eventId);
   return { status: written.kind, event_id: written.eventId, say };
 }
 
