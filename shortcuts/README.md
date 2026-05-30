@@ -96,6 +96,46 @@ Phase 2 — these docs are the recipe, not an on-device guarantee.
 
 ---
 
+## Reliability: "network connection was lost" (-1005)
+
+Symptom: a Shortcut occasionally fails with **"The network connection was
+lost"** even though the URL and token are correct.
+
+**Cause — cold start, not a broken setup.** Vercel's free tier idles the
+serverless function after a few minutes. The next call pays a cold start
+(function boot + a fresh TLS connection to the Supabase pooler), which on a
+flaky cell signal can exceed iOS's patience — Shortcuts reports `-1005`. Two
+things make this confusing:
+
+- **The write usually still succeeds server-side.** The server finishes and
+  inserts the row; only the *response* fails to reach the phone. So a log can
+  land even when Siri says it failed.
+- iOS Shortcuts has **no try/catch**, so a Shortcut cannot catch `-1005` and
+  auto-retry. The only retry is re-running by hand — which is a fresh run with
+  a fresh `client_uuid`, so it would log a **second** row.
+
+**Habit:** if you see `-1005`, glance at the dashboard before re-running. The
+log probably went through.
+
+**Fix — keep the function warm.** `GET /api/health`
+(`src/app/api/health/route.ts`) runs a trivial `select 1` on the same runtime
+pool a real write uses. Point a free uptime pinger at it every ~5 minutes so
+the function and DB connection never go cold:
+
+```
+GET  {NEXT_PUBLIC_APP_URL}/api/health   →   { "ok": true, "db": "up" }
+```
+
+- Free pingers: [cron-job.org](https://cron-job.org) or
+  [UptimeRobot](https://uptimerobot.com) — 5-minute interval, GET, no auth.
+- Vercel Cron is **not** a fit on the free (Hobby) tier — it's capped at
+  roughly one run per day, too infrequent to keep anything warm.
+
+Measured locally: a cold call took 6.5s, every warm call after ~0.05s — that
+gap is the whole problem, and keep-warm closes it.
+
+---
+
 ## Per-run testing (curl)
 
 Swap in a real token + URL. Reuse the same `client_uuid` twice to prove

@@ -1,0 +1,34 @@
+name: keep-warm
+
+# Pings GET /api/health every ~5 min so the Vercel free-tier function and the
+# Supabase connection pool never go cold. A cold start makes iOS Shortcuts give
+# up with "network connection was lost" (-1005) even though the write often
+# still completes server-side. See shortcuts/README.md "Reliability".
+#
+# NOTE: GitHub's scheduled crons are best-effort and can be delayed or skipped
+# under load, so this is a baseline, not a guarantee. For tighter pinging use a
+# dedicated free pinger (cron-job.org / UptimeRobot) at a 5-minute interval.
+# GitHub also disables scheduled workflows after 60 days with no repo activity.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint (warm + verify)
+        run: |
+          url="https://newborn-tracker-nu.vercel.app/api/health"
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "$url" || echo "000")
+            echo "attempt $attempt -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::health endpoint did not return 200 after 3 attempts"
+          exit 1
