@@ -24,10 +24,13 @@ import type { DaySummaryPayload } from "@/lib/day-summary";
 type RangeKey = "week" | "this_month" | "last_month";
 type Status = "within" | "below" | "above";
 
-const RANGES: { key: RangeKey; label: string }[] = [
-  { key: "week", label: "Week" },
-  { key: "this_month", label: "This month" },
-  { key: "last_month", label: "Last month" },
+// `shortLabel` is shown on narrow phones (<sm) where the full labels would
+// shove the segmented control past the card edge; `label` is shown on wider
+// screens where there's room.
+const RANGES: { key: RangeKey; label: string; shortLabel: string }[] = [
+  { key: "week", label: "Week", shortLabel: "Week" },
+  { key: "this_month", label: "This month", shortLabel: "Month" },
+  { key: "last_month", label: "Last month", shortLabel: "Prev" },
 ];
 
 const STATUS_COLOR: Record<Status, string> = {
@@ -183,14 +186,14 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
       aria-label="Intake trend"
       className="w-full rounded-lg bg-card p-5 text-card-foreground shadow-md ring-1 ring-black/5"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs font-medium uppercase tracking-[0.2em] text-card-foreground/55">
             Intake trend
           </p>
           <p className="mt-1 text-sm text-card-foreground/60">Daily ounces against the healthy range for his age.</p>
         </div>
-        <div className="flex shrink-0 overflow-hidden rounded-lg border border-card-foreground/15 text-xs">
+        <div className="-mx-1 flex shrink-0 self-start overflow-hidden rounded-lg border border-card-foreground/15 text-xs sm:mx-0">
           {RANGES.map((r) => (
             <button
               key={r.key}
@@ -203,7 +206,8 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
                   : "px-3 py-1.5 text-card-foreground/60 transition-colors hover:text-card-foreground"
               }
             >
-              {r.label}
+              <span className="sm:hidden">{r.shortLabel}</span>
+              <span className="hidden sm:inline">{r.label}</span>
             </button>
           ))}
         </div>
@@ -291,29 +295,35 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
             Breast feeds use your own estimate, so totals can read a little low — his real intake is likely higher.
           </p>
 
-          <ul className="mt-5 space-y-1.5 border-t border-card-foreground/10 pt-4">
-            {selected.map((d) => (
-              <li key={d.day_start} className="flex items-center justify-between gap-3 text-sm">
-                <span className="truncate text-card-foreground/80">{fullDayLabel(d.day_start, timeZone)}</span>
-                <span className="flex shrink-0 items-center gap-2 text-card-foreground/55 tabular-nums">
-                  {formatOz(d.feeds.total_oz)} oz · {d.diapers.pee_count} wet · {d.diapers.poop_count} dirty
-                  {(() => {
-                    const status = statusOf(d.feeds.total_oz, d.target.low_oz, d.target.high_oz);
-                    return (
-                      <span
-                        className={
-                          status === "below"
-                            ? "rounded-full bg-amber-100/70 px-2 py-0.5 text-amber-800"
-                            : "rounded-full bg-card-foreground/5 px-2 py-0.5 text-card-foreground/60"
-                        }
-                      >
-                        {STATUS_LABEL[status]}
-                      </span>
-                    );
-                  })()}
+          <ul className="mt-5 space-y-3 border-t border-card-foreground/10 pt-4 sm:space-y-1.5">
+            {selected.map((d) => {
+              const status = statusOf(d.feeds.total_oz, d.target.low_oz, d.target.high_oz);
+              const statusPill = (
+                <span
+                  className={
+                    status === "below"
+                      ? "rounded-full bg-amber-100/70 px-2 py-0.5 text-amber-800"
+                      : "rounded-full bg-card-foreground/5 px-2 py-0.5 text-card-foreground/60"
+                  }
+                >
+                  {STATUS_LABEL[status]}
                 </span>
-              </li>
-            ))}
+              );
+              return (
+                <li
+                  key={d.day_start}
+                  className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+                >
+                  <span className="text-card-foreground/80 sm:truncate">{fullDayLabel(d.day_start, timeZone)}</span>
+                  <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-card-foreground/55 tabular-nums sm:shrink-0 sm:flex-nowrap sm:gap-2">
+                    <span>
+                      {formatOz(d.feeds.total_oz)} oz · {d.diapers.pee_count} wet · {d.diapers.poop_count} dirty
+                    </span>
+                    {statusPill}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </>
       )}
