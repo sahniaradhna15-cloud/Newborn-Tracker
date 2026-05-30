@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { WhenPicker } from "@/components/WhenPicker";
 import { submitOrQueue } from "@/lib/offline-queue";
 import { FeedInput } from "@/lib/voice-parser";
 
@@ -32,17 +33,23 @@ function readSay(data: unknown): string {
   return "Logged.";
 }
 
-/** datetime-local <input> wants "YYYY-MM-DDTHH:mm" in local wall time. */
-function isoToLocalInput(iso: string): string {
-  const d = new Date(iso);
-  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
+/**
+ * Two independent Left/Right toggles fold back into the stored enum: both on →
+ * "both", neither → undefined (lets the schema flag "pick a side"). There is no
+ * "both" button — selecting Left and Right together expresses it.
+ */
+function deriveSide(isLeftOn: boolean, isRightOn: boolean): FeedSide | undefined {
+  if (isLeftOn && isRightOn) return "both";
+  if (isLeftOn) return "left";
+  if (isRightOn) return "right";
+  return undefined;
 }
 
 export function FeedForm() {
   const router = useRouter();
   const [kind, setKind] = useState<FeedKind>("nursing");
-  const [side, setSide] = useState<FeedSide | undefined>(undefined);
+  const [isLeftOn, setIsLeftOn] = useState(false);
+  const [isRightOn, setIsRightOn] = useState(false);
   const [occurredIso, setOccurredIso] = useState<string>(
     new Date().toISOString(),
   );
@@ -61,12 +68,14 @@ export function FeedForm() {
     setKind(next);
     setValue("kind", next);
   }
-  function selectSide(next: FeedSide) {
-    setSide(next);
-    setValue("side", next, { shouldValidate: true });
+  function toggleSide(which: "left" | "right") {
+    const nextLeftOn = which === "left" ? !isLeftOn : isLeftOn;
+    const nextRightOn = which === "right" ? !isRightOn : isRightOn;
+    setIsLeftOn(nextLeftOn);
+    setIsRightOn(nextRightOn);
+    setValue("side", deriveSide(nextLeftOn, nextRightOn), { shouldValidate: true });
   }
-  function changeOccurred(localValue: string) {
-    const iso = new Date(localValue).toISOString();
+  function pickOccurred(iso: string) {
     setOccurredIso(iso);
     setValue("occurred_at", iso, { shouldValidate: true });
   }
@@ -119,18 +128,25 @@ export function FeedForm() {
             <div className="space-y-1.5">
               <Label>Side</Label>
               <div className="flex gap-2">
-                {(["left", "right", "both"] as const).map((s) => (
-                  <Button
-                    key={s}
-                    type="button"
-                    variant={side === s ? "default" : "outline"}
-                    className="flex-1 capitalize"
-                    onClick={() => selectSide(s)}
-                  >
-                    {s}
-                  </Button>
-                ))}
+                {(["left", "right"] as const).map((s) => {
+                  const isOn = s === "left" ? isLeftOn : isRightOn;
+                  return (
+                    <Button
+                      key={s}
+                      type="button"
+                      variant={isOn ? "default" : "outline"}
+                      className="flex-1 capitalize"
+                      onClick={() => toggleSide(s)}
+                      aria-pressed={isOn}
+                    >
+                      {s}
+                    </Button>
+                  );
+                })}
               </div>
+              <p className="text-xs text-card-foreground/55">
+                Fed on both sides? Tap Left and Right.
+              </p>
               {errors.side ? (
                 <p className="text-xs text-amber-700">{errors.side.message}</p>
               ) : null}
@@ -190,13 +206,8 @@ export function FeedForm() {
         )}
 
         <div className="space-y-1.5">
-          <Label htmlFor="occurred_at">When</Label>
-          <Input
-            id="occurred_at"
-            type="datetime-local"
-            value={isoToLocalInput(occurredIso)}
-            onChange={(e) => changeOccurred(e.target.value)}
-          />
+          <Label>When</Label>
+          <WhenPicker value={occurredIso} onChange={pickOccurred} />
         </div>
 
         <div className="space-y-1.5">

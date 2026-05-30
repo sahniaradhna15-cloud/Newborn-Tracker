@@ -43,7 +43,15 @@ export type DaySummary = {
     count: number;
     last_at: string | null;
   };
-  diapers: { pee_count: number; poop_count: number; last_at: string | null };
+  diapers: {
+    pee_count: number;
+    poop_count: number;
+    wet_only_count: number;
+    dirty_only_count: number;
+    both_count: number;
+    change_count: number;
+    last_at: string | null;
+  };
   target: { low_oz: number; high_oz: number; age_days: number; weight_oz: number | null };
   last_feed_minutes_ago: number | null;
 };

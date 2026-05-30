@@ -78,8 +78,15 @@ function reduceDay(
   }
   const totalOz = nursingOz + pumpedOz + formulaOz;
 
+  // pee_count / poop_count overlap (a both-diaper counts in each) and are what
+  // the insight thresholds read. wet_only / dirty_only / both partition the
+  // changes with no overlap — they sum to change_count exactly — so the
+  // dashboard can show "wet vs dirty vs both" as three honest slices.
   let peeCount = 0;
   let poopCount = 0;
+  let wetOnlyCount = 0;
+  let dirtyOnlyCount = 0;
+  let bothCount = 0;
   let lastDiaperAt: Date | null = null;
   for (const diaper of diaperRows) {
     if (diaper.pee) {
@@ -87,6 +94,13 @@ function reduceDay(
     }
     if (diaper.poop) {
       poopCount += 1;
+    }
+    if (diaper.pee && diaper.poop) {
+      bothCount += 1;
+    } else if (diaper.pee) {
+      wetOnlyCount += 1;
+    } else if (diaper.poop) {
+      dirtyOnlyCount += 1;
     }
     lastDiaperAt = laterOf(lastDiaperAt, diaper.occurredAt);
   }
@@ -114,6 +128,10 @@ function reduceDay(
     diapers: {
       pee_count: peeCount,
       poop_count: poopCount,
+      wet_only_count: wetOnlyCount,
+      dirty_only_count: dirtyOnlyCount,
+      both_count: bothCount,
+      change_count: diaperRows.length,
       last_at: lastDiaperAt === null ? null : lastDiaperAt.toISOString(),
     },
     target: { low_oz: band.lowOz, high_oz: band.highOz, age_days: ageDays, weight_oz: currentWeightOz },

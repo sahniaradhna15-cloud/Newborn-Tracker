@@ -37,6 +37,14 @@ export function IntakeTrendMini({ days, timeZone }: { days: DaySummaryPayload[];
   const dayInitial = (iso: string) =>
     new Intl.DateTimeFormat("en-US", { weekday: "narrow", timeZone }).format(new Date(iso));
 
+  // The healthy range rises with age; over a 7-day glance the spread is small,
+  // so one averaged band reads cleanly. The full /history chart shows the exact
+  // per-day band. Positioned as a % of the same `maxScale` the bars use.
+  const avgLow = ordered.reduce((sum, d) => sum + d.target.low_oz, 0) / ordered.length;
+  const avgHigh = ordered.reduce((sum, d) => sum + d.target.high_oz, 0) / ordered.length;
+  const lowPct = (avgLow / maxScale) * 100;
+  const highPct = (avgHigh / maxScale) * 100;
+
   return (
     <Link
       href="/history"
@@ -49,19 +57,33 @@ export function IntakeTrendMini({ days, timeZone }: { days: DaySummaryPayload[];
         </span>
       </div>
 
-      <div className="mt-4 flex h-16 items-end gap-2">
-        {ordered.map((d) => {
-          const status = statusOf(d.feeds.total_oz, d.target.low_oz, d.target.high_oz);
-          const heightPct = Math.max(6, Math.round((d.feeds.total_oz / maxScale) * 100));
-          return (
-            <div
-              key={d.day_start}
-              className="flex-1 rounded-sm"
-              style={{ height: `${heightPct}%`, backgroundColor: STATUS_COLOR[status] }}
-              aria-hidden="true"
-            />
-          );
-        })}
+      <div className="relative mt-4 h-16">
+        {/* Recommended range for his age: faint band low→high with a dashed
+            line on the lower edge (the level to reach). Sits behind the bars. */}
+        <div
+          className="pointer-events-none absolute inset-x-0 z-0 rounded-sm"
+          style={{ bottom: `${lowPct}%`, height: `${Math.max(0, highPct - lowPct)}%`, backgroundColor: "var(--chart-2)", opacity: 0.16 }}
+          aria-hidden="true"
+        />
+        <div
+          className="pointer-events-none absolute inset-x-0 z-0 border-t border-dashed"
+          style={{ bottom: `${lowPct}%`, borderColor: "var(--chart-2)" }}
+          aria-hidden="true"
+        />
+        <div className="relative z-10 flex h-full items-end gap-2">
+          {ordered.map((d) => {
+            const status = statusOf(d.feeds.total_oz, d.target.low_oz, d.target.high_oz);
+            const heightPct = Math.max(6, Math.round((d.feeds.total_oz / maxScale) * 100));
+            return (
+              <div
+                key={d.day_start}
+                className="flex-1 rounded-sm"
+                style={{ height: `${heightPct}%`, backgroundColor: STATUS_COLOR[status] }}
+                aria-hidden="true"
+              />
+            );
+          })}
+        </div>
       </div>
       <div className="mt-1 flex gap-2">
         {ordered.map((d) => (
@@ -71,8 +93,13 @@ export function IntakeTrendMini({ days, timeZone }: { days: DaySummaryPayload[];
         ))}
       </div>
 
-      <p className="mt-3 text-xs text-card-foreground/55">
-        Daily intake vs. his healthy range — tap for week &amp; month views.
+      <p className="mt-3 flex items-center gap-1.5 text-xs text-card-foreground/55">
+        <span
+          className="inline-block h-2 w-3 shrink-0 rounded-sm"
+          style={{ backgroundColor: "var(--chart-2)", opacity: 0.3 }}
+          aria-hidden="true"
+        />
+        Shaded band is his healthy range — tap for week &amp; month views.
       </p>
     </Link>
   );

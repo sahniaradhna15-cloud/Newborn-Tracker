@@ -14,7 +14,15 @@ function chicagoAt(hour: number): Date {
 function baseSummary(): DaySummary {
   return {
     feeds: { total_oz: 20, nursing_oz: 10, pumped_oz: 10, formula_oz: 0, wasted_oz: 0, count: 5, last_at: null },
-    diapers: { pee_count: 10, poop_count: 3, last_at: null },
+    diapers: {
+      pee_count: 10,
+      poop_count: 3,
+      wet_only_count: 8,
+      dirty_only_count: 1,
+      both_count: 2,
+      change_count: 11,
+      last_at: null,
+    },
     target: { low_oz: 14, high_oz: 18, age_days: 20, weight_oz: 114 },
     last_feed_minutes_ago: 30,
   };
@@ -126,7 +134,15 @@ describe("tone & ordering invariants (CLAUDE.md §11.3)", () => {
     const now = chicagoAt(21);
     const everythingFires: DaySummary = {
       feeds: { total_oz: 5, nursing_oz: 1, pumped_oz: 0, formula_oz: 10, wasted_oz: 0, count: 2, last_at: null },
-      diapers: { pee_count: 1, poop_count: 0, last_at: new Date(now.getTime() - 8 * 3_600_000).toISOString() },
+      diapers: {
+        pee_count: 1,
+        poop_count: 0,
+        wet_only_count: 1,
+        dirty_only_count: 0,
+        both_count: 0,
+        change_count: 1,
+        last_at: new Date(now.getTime() - 8 * 3_600_000).toISOString(),
+      },
       target: { low_oz: 14, high_oz: 18, age_days: 20, weight_oz: 114 },
       last_feed_minutes_ago: 600,
     };
@@ -143,7 +159,15 @@ describe("tone & ordering invariants (CLAUDE.md §11.3)", () => {
     const now = chicagoAt(21);
     const s: DaySummary = {
       feeds: { total_oz: 5, nursing_oz: 1, pumped_oz: 0, formula_oz: 10, wasted_oz: 0, count: 2, last_at: null },
-      diapers: { pee_count: 1, poop_count: 0, last_at: new Date(now.getTime() - 8 * 3_600_000).toISOString() },
+      diapers: {
+        pee_count: 1,
+        poop_count: 0,
+        wet_only_count: 1,
+        dirty_only_count: 0,
+        both_count: 0,
+        change_count: 1,
+        last_at: new Date(now.getTime() - 8 * 3_600_000).toISOString(),
+      },
       target: { low_oz: 14, high_oz: 18, age_days: 20, weight_oz: 114 },
       last_feed_minutes_ago: 600,
     };

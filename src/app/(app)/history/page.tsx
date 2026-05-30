@@ -15,6 +15,7 @@
  * that entity (CLAUDE.md §11.4). No PII leaves the server beyond the display
  * names the household already shares.
  */
+import { formatInTimeZone } from "date-fns-tz";
 import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -36,7 +37,20 @@ import { firstInstantOfMonthsBack, getDayWindow } from "@/lib/day-window";
 import { getSessionAuthContext } from "@/lib/with-auth";
 import { withUserContext } from "@/lib/with-user-context";
 
-const HISTORY_DAYS = 7;
+const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The instant whose logical day the entries list shows. Noon UTC of the
+ * requested calendar date sits safely inside that date's 4am-rollover window
+ * (always 6–7am in America/Chicago), so `getDayWindow` re-derives the right
+ * [start, end). An absent/invalid `?date` param means the live "now".
+ */
+function resolveHistoryInstant(rawDate: string | undefined, now: Date): Date {
+  if (typeof rawDate === "string" && DATE_PARAM_PATTERN.test(rawDate)) {
+    return new Date(`${rawDate}T12:00:00Z`);
+  }
+  return now;
+}
 
 function toNum(value: unknown): number {
   const n = Number(value ?? 0);
@@ -52,15 +66,16 @@ function dayLabel(iso: string, timeZone: string): string {
   }).format(new Date(iso));
 }
 
-export default async function HistoryPage() {
+export default async function HistoryPage({ searchParams }: { searchParams: Promise<{ date?: string }> }) {
   const auth = await getSessionAuthContext();
   if (!auth) redirect("/onboarding");
 
+  const { date: rawDate } = await searchParams;
   const now = new Date();
-  const historyFrom = new Date(now.getTime() - (HISTORY_DAYS - 1) * 24 * 60 * 60 * 1000);
+  const evalInstant = resolveHistoryInstant(rawDate, now);
 
-  // Read the household (for its timezone), baby, and the editable last-7-days
-  // detail rows in one RLS-bound transaction.
+  // Read the household (for its timezone), baby, and the editable rows for the
+  // ONE selected logical day in one RLS-bound transaction.
   const detail = await withUserContext(auth.user_id, async (tx) => {
     const [household] = await tx
       .select()
@@ -74,8 +89,7 @@ export default async function HistoryPage() {
       .limit(1);
     if (!household || !baby) return null;
 
-    const firstWindow = getDayWindow(historyFrom, household.timezone, household.dayStartHour);
-    const lastWindow = getDayWindow(now, household.timezone, household.dayStartHour);
+    const dayWindow = getDayWindow(evalInstant, household.timezone, household.dayStartHour);
 
     const feedRows = await tx
       .select()
@@ -83,8 +97,8 @@ export default async function HistoryPage() {
       .where(
         and(
           eq(feedEvents.babyId, baby.id),
-          gte(feedEvents.occurredAt, firstWindow.start),
-          lt(feedEvents.occurredAt, lastWindow.end),
+          gte(feedEvents.occurredAt, dayWindow.start),
+          lt(feedEvents.occurredAt, dayWindow.end),
         ),
       )
       .orderBy(desc(feedEvents.occurredAt));
@@ -94,8 +108,8 @@ export default async function HistoryPage() {
       .where(
         and(
           eq(diaperEvents.babyId, baby.id),
-          gte(diaperEvents.occurredAt, firstWindow.start),
-          lt(diaperEvents.occurredAt, lastWindow.end),
+          gte(diaperEvents.occurredAt, dayWindow.start),
+          lt(diaperEvents.occurredAt, dayWindow.end),
         ),
       )
       .orderBy(desc(diaperEvents.occurredAt));
@@ -125,7 +139,7 @@ export default async function HistoryPage() {
           .orderBy(desc(eventAudit.createdAt))
       : [];
 
-    return { household, baby, feedRows, diaperRows, members, editRows };
+    return { household, baby, feedRows, diaperRows, members, editRows, dayWindow };
   });
 
   if (!detail) redirect("/onboarding");
@@ -215,23 +229,21 @@ export default async function HistoryPage() {
     });
   }
 
-  // Group the editable events into the last 7 logical-day windows (the newest
-  // 7 entries of the trend, which uses the identical windowing).
-  const groups: EventDayGroup[] = trend.days.slice(0, HISTORY_DAYS).map((day) => {
-    const start = new Date(day.day_start);
-    const end = new Date(day.day_end);
-    const dayEvents = events
-      .filter((e) => {
-        const t = new Date(e.occurred_at);
-        return t >= start && t < end;
-      })
-      .sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
-    return {
-      day_start: day.day_start,
-      label: dayLabel(day.day_start, timeZone),
-      events: dayEvents,
-    };
-  });
+  // The detail rows are already scoped to the one selected logical day; lay
+  // them out newest-first for that day. The date scanner in EventList moves the
+  // ?date param to load any other day on demand (all of history, not just 7).
+  const dayStartIso = detail.dayWindow.start.toISOString();
+  const group: EventDayGroup = {
+    day_start: dayStartIso,
+    label: dayLabel(dayStartIso, timeZone),
+    events: [...events].sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()),
+  };
+  const selectedDate = formatInTimeZone(detail.dayWindow.start, timeZone, "yyyy-MM-dd");
+  const todayDate = formatInTimeZone(
+    getDayWindow(now, timeZone, detail.household.dayStartHour).start,
+    timeZone,
+    "yyyy-MM-dd",
+  );
 
   return (
     <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-8">
@@ -257,9 +269,11 @@ export default async function HistoryPage() {
       <h2 className="mt-10 mb-3 text-lg text-foreground">What he needs by age</h2>
       <IntakeByAge babyName={detail.baby.name} rows={byAgeRows} />
 
-      <h2 className="mt-10 mb-1 text-lg text-foreground">Recent entries</h2>
-      <p className="mb-4 text-sm text-foreground/60">The last 7 days. Tap Edit to correct a feed or diaper.</p>
-      <EventList groups={groups} timeZone={timeZone} />
+      <h2 className="mt-10 mb-1 text-lg text-foreground">Entries by day</h2>
+      <p className="mb-4 text-sm text-foreground/60">
+        Pick a date to scan that day. Tap the pencil to edit, the trash to delete one, or Select to remove several.
+      </p>
+      <EventList group={group} timeZone={timeZone} selectedDate={selectedDate} todayDate={todayDate} />
 
       <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
         Not medical advice. Call your pediatrician if you&apos;re worried.
