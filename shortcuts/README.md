@@ -112,6 +112,17 @@ curl -X POST "$APP_URL/api/events" \
 
 ---
 
+## Recommended: one hands-free Shortcut
+
+Before building the six per-phrase Shortcuts below, consider the single
+[`log-baby.shortcut.md`](./log-baby.shortcut.md): one Shortcut, you say
+"Hey Siri, Log baby" then speak the phrase ("poop", "two ounces of
+formula"). The server parses it (`src/lib/spoken-log-parser.ts`) and
+generates the `client_uuid` for you, so there is **no UUID step** and no
+per-event Dictionary — it posts `{ "text": "<what you said>" }` to
+`/api/voice`. The six dedicated phrases below remain valid if you'd rather
+say "Log a poop" directly.
+
 ## The six Shortcuts
 
 | File | Siri phrase (suggested) | `event` payload |

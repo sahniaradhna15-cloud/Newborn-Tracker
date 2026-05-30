@@ -2,17 +2,24 @@
  * `POST /api/voice` (bearer) — the LEGACY adapter into the canonical
  * write path (TECHNICAL_SPEC §5.3, CLAUDE.md §5.4).
  *
- * A Shortcut that cannot generate a client-side UUID v4 (no first-class
- * "Generate UUID" action in iOS Shortcuts) posts this flatter shape
- * instead of the full `InboundEvent`. We translate it into a canonical
- * `InboundEvent`, GENERATE a `client_uuid` server-side when absent
- * (the documented tradeoff: a flaky-network retry without a stable
+ * Accepts two shapes, both flatter than the full `InboundEvent`:
+ *
+ *  1. `{ text }` — a dictated phrase ("poop", "two ounces of formula").
+ *     {@link parseSpokenLog} turns it into the canonical `event` object.
+ *     This is the one-shortcut, hands-free Siri path.
+ *  2. The flat legacy body (`action`, `kind`, `pee`, …) for menu-style
+ *     Shortcuts that pre-structure the fields.
+ *
+ * Either way we GENERATE a `client_uuid` server-side when absent (the
+ * documented tradeoff: a flaky-network retry without a stable
  * `client_uuid` is no longer idempotent — acceptable for low-frequency
- * manual Shortcuts; see shortcuts/README.md "client_uuid step"), then
- * hand off to the ONE write path, `recordEvent`. No INSERTs here.
+ * manual Shortcuts; see shortcuts/README.md "client_uuid step"), build a
+ * canonical `InboundEvent`, and hand off to the ONE write path,
+ * `recordEvent`. No INSERTs here.
  *
  * Bearer-authed (api_tokens) → CSRF-exempt in middleware. Every
- * response carries `say` so a failed Shortcut can still speak.
+ * response carries `say` so a failed Shortcut can still speak — including
+ * the parser's clarification prompts ("Was that wet, dirty, or both?").
  */
 import { randomUUID } from "node:crypto";
 
@@ -20,10 +27,18 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { recordEvent } from "@/lib/record-event";
+import { parseSpokenLog } from "@/lib/spoken-log-parser";
 import { InboundEvent } from "@/lib/voice-parser";
 import { withAuth } from "@/lib/with-auth";
 
 const FAIL_SAY = "Sorry, that didn't work.";
+
+/** The dictated-phrase shape (Siri "say what happened" Shortcut). */
+const TextBody = z.object({
+  text: z.string().trim().min(1).max(200),
+  client_uuid: z.uuid().optional(),
+  occurred_at: z.iso.datetime().optional(),
+});
 
 /**
  * The flat legacy wire shape. Intentionally permissive on the numeric
@@ -92,25 +107,48 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const legacy = LegacyBody.safeParse(raw);
-  if (!legacy.success) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "validation_failed",
-        details: legacy.error.issues,
-        say: FAIL_SAY,
-      },
-      { status: 400 },
-    );
+  let eventObject: Record<string, unknown>;
+  let clientUuid: string | undefined;
+  let occurredAt: string | undefined;
+  let note: string | undefined;
+
+  const asText = TextBody.safeParse(raw);
+  if (asText.success) {
+    const spoken = parseSpokenLog(asText.data.text);
+    if (!spoken.ok) {
+      return NextResponse.json(
+        { ok: false, error: "unparsed_speech", say: spoken.say },
+        { status: 400 },
+      );
+    }
+    eventObject = spoken.event;
+    clientUuid = asText.data.client_uuid;
+    occurredAt = asText.data.occurred_at;
+  } else {
+    const legacy = LegacyBody.safeParse(raw);
+    if (!legacy.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "validation_failed",
+          details: legacy.error.issues,
+          say: FAIL_SAY,
+        },
+        { status: 400 },
+      );
+    }
+    eventObject = toInboundEventObject(legacy.data);
+    clientUuid = legacy.data.client_uuid;
+    occurredAt = legacy.data.occurred_at;
+    note = legacy.data.note;
   }
 
   const candidate = {
-    client_uuid: legacy.data.client_uuid ?? randomUUID(),
+    client_uuid: clientUuid ?? randomUUID(),
     source: "siri_shortcut" as const,
-    occurred_at: legacy.data.occurred_at ?? new Date().toISOString(),
-    event: toInboundEventObject(legacy.data),
-    ...(legacy.data.note ? { note: legacy.data.note } : {}),
+    occurred_at: occurredAt ?? new Date().toISOString(),
+    event: eventObject,
+    ...(note ? { note } : {}),
   };
 
   const parsed = InboundEvent.safeParse(candidate);

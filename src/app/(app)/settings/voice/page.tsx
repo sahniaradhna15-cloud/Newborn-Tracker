@@ -22,13 +22,16 @@ import { withUserContext } from "@/lib/with-user-context";
 import { VoiceTokensPanel, type VoiceToken } from "./VoiceTokensPanel";
 
 /**
- * The six hand-built Shortcuts (shortcuts/*.shortcut.md). `icloudUrl`
- * is the iCloud share link the user pastes AFTER uploading the built
- * `.shortcut` — left empty here on purpose; the import deep link is
- * only rendered once a URL is present. Keep these `name`s in sync with
- * shortcuts/README.md "The six Shortcuts" table.
+ * The hand-built Shortcuts (shortcuts/*.shortcut.md). `icloudUrl` is the
+ * iCloud share link the user pastes AFTER uploading the built `.shortcut`
+ * — left empty here on purpose; the import deep link is only rendered
+ * once a URL is present. "Log baby" is the recommended one-Shortcut,
+ * hands-free option (you speak the phrase); the six below are dedicated
+ * per-phrase Shortcuts. Keep these `name`s in sync with
+ * shortcuts/README.md.
  */
 const SIRI_SHORTCUTS: ReadonlyArray<{ name: string; icloudUrl: string }> = [
+  { name: "Log baby (recommended — speak the phrase)", icloudUrl: "" },
   { name: "Log a pee", icloudUrl: "" },
   { name: "Log a poop", icloudUrl: "" },
   { name: "Log a dirty diaper", icloudUrl: "" },
@@ -80,9 +83,10 @@ export default async function VoiceSettingsPage() {
     <main className="mx-auto w-full max-w-md flex-1 px-6 py-10">
       <h1 className="mb-1 text-2xl text-foreground">Siri voice</h1>
       <p className="mb-6 text-sm text-stone-600 dark:text-stone-400">
-        Generate a token, paste it into your Shortcuts once, then say
-        &ldquo;Hey Siri, log a pee.&rdquo; Revoking a token instantly
-        stops every Shortcut using it.
+        Generate a token, paste it into your Shortcut once, then say
+        &ldquo;Hey Siri, log baby&rdquo; and speak what happened
+        (&ldquo;poop&rdquo;, &ldquo;two ounces of formula&rdquo;).
+        Revoking a token instantly stops every Shortcut using it.
       </p>
       <VoiceTokensPanel
         tokens={tokens}
