@@ -30,7 +30,14 @@ type DayPreview = {
   pee: number;
   poop: number;
 };
-type SkippedLine = { rawLine: string; reason: string; dateLabel: string };
+type SkippedLine = {
+  skipKey: string;
+  rawLine: string;
+  reason: string;
+  dateLabel: string;
+  kind: "formula" | "breast";
+  occurredAtIso: string;
+};
 type Counts = { days: number; feeds: number; diapers: number; skipped: number };
 type PreviewResponse = {
   ok: true;
@@ -43,9 +50,26 @@ type PreviewResponse = {
 type CommitResponse = { ok: true; mode: "commit"; accepted: number; duplicate: number; failed: number; counts: Counts };
 
 const HEADERS = { "Content-Type": "application/json", "X-Requested-With": "fetch" };
+const ML_PER_OZ = 29.5735;
 
 function fmtOz(n: number): string {
   return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+}
+
+function parseMl(draft: string): number | null {
+  const trimmed = draft.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function fixesPayload(drafts: Record<string, string>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, draft] of Object.entries(drafts)) {
+    const ml = parseMl(draft);
+    if (ml !== null) out[key] = ml;
+  }
+  return out;
 }
 
 export function ImportConsole() {
@@ -56,8 +80,17 @@ export function ImportConsole() {
   const [result, setResult] = useState<CommitResponse | null>(null);
   const [busy, setBusy] = useState<"preview" | "commit" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // skipKey → ml draft string (kept as a string so the input can be empty
+  // without coercing to NaN/0). Survives across "Recalculate" so fixes persist
+  // as the user resolves them one by one.
+  const [fixDrafts, setFixDrafts] = useState<Record<string, string>>({});
+  // Set of skipKeys whose draft has changed since the last preview round-trip,
+  // so we can prompt the user to Recalculate before importing.
+  const [pendingFixKeys, setPendingFixKeys] = useState<Set<string>>(new Set());
 
   const totalEntries = preview ? preview.counts.feeds + preview.counts.diapers : 0;
+  const stagedFixCount = Object.values(fixDrafts).filter((d) => parseMl(d) !== null).length;
+  const hasPendingFixes = pendingFixKeys.size > 0;
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -66,16 +99,19 @@ export function ImportConsole() {
     setRawText(text);
     setPreview(null);
     setResult(null);
+    setFixDrafts({});
+    setPendingFixKeys(new Set());
   }
 
   async function call(commit: boolean) {
     setBusy(commit ? "commit" : "preview");
     setError(null);
     try {
+      const fixes = fixesPayload(fixDrafts);
       const res = await fetch("/api/import", {
         method: "POST",
         headers: HEADERS,
-        body: JSON.stringify({ rawText, commit }),
+        body: JSON.stringify({ rawText, commit, fixes }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
@@ -89,6 +125,8 @@ export function ImportConsole() {
       } else {
         setPreview(data as PreviewResponse);
         setResult(null);
+        // Round-trip done — drafts the server has now seen are no longer pending.
+        setPendingFixKeys(new Set());
       }
     } catch {
       setError("Something went wrong reaching the server. Check your connection and try again.");
@@ -110,6 +148,8 @@ export function ImportConsole() {
             setRawText(e.target.value);
             setPreview(null);
             setResult(null);
+            setFixDrafts({});
+            setPendingFixKeys(new Set());
           }}
           rows={10}
           placeholder={"April 29 2026\n- 3 am - 70ml formula\n- 7 am - breast milk 80ml\n- Pee and poop\n..."}
@@ -170,7 +210,12 @@ export function ImportConsole() {
                   {preview.counts.skipped > 0 ? ` · ${preview.counts.skipped} skipped` : ""}
                 </p>
               </div>
-              <Button type="button" onClick={() => call(true)} disabled={busy !== null || totalEntries === 0}>
+              <Button
+                type="button"
+                onClick={() => call(true)}
+                disabled={busy !== null || totalEntries === 0 || hasPendingFixes}
+                title={hasPendingFixes ? "Recalculate to include your fixes first" : undefined}
+              >
                 {busy === "commit" ? "Importing…" : `Import ${totalEntries} entries`}
               </Button>
             </div>
@@ -230,19 +275,112 @@ export function ImportConsole() {
 
           {preview.skipped.length > 0 ? (
             <section className="rounded-lg bg-card p-5 text-card-foreground shadow-md ring-1 ring-black/5">
-              <p className="text-sm font-medium text-card-foreground">Skipped ({preview.skipped.length})</p>
-              <p className="mt-1 text-xs text-card-foreground/55">
-                These weren’t counted (mostly breast feeds with no amount written). Edit your notes and re-paste if you
-                want any included.
-              </p>
-              <ul className="mt-3 space-y-1.5 text-sm">
-                {preview.skipped.map((s, i) => (
-                  <li key={i} className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="text-card-foreground/45">{s.dateLabel}</span>
-                    <span className="text-card-foreground/80">“{s.rawLine}”</span>
-                    <span className="text-xs text-card-foreground/45">— {s.reason}</span>
-                  </li>
-                ))}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-card-foreground">Skipped ({preview.skipped.length})</p>
+                  <p className="mt-1 text-xs text-card-foreground/55">
+                    Breast and formula lines with no readable amount aren’t counted. Type the amount (ml) for any you want
+                    included, then Recalculate — or just leave them skipped.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => call(false)}
+                  disabled={busy !== null || !hasPendingFixes}
+                  title={hasPendingFixes ? "Re-read the notes with your fixes applied" : "No pending fixes to apply"}
+                >
+                  {busy === "preview" ? "Recalculating…" : "Recalculate"}
+                </Button>
+              </div>
+              {stagedFixCount > 0 ? (
+                <p className="mt-2 text-xs text-card-foreground/55">
+                  {stagedFixCount} {stagedFixCount === 1 ? "fix" : "fixes"} ready
+                  {hasPendingFixes ? " — recalculate to fold them into the totals above." : "."}
+                </p>
+              ) : null}
+              <ul className="mt-4 space-y-2.5 text-sm">
+                {preview.skipped.map((s) => {
+                  const draft = fixDrafts[s.skipKey] ?? "";
+                  const ml = parseMl(draft);
+                  return (
+                    <li
+                      key={s.skipKey}
+                      className="rounded-lg border border-card-foreground/10 bg-background/5 p-3"
+                    >
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span
+                          className={
+                            s.kind === "formula"
+                              ? "rounded-full bg-card-foreground/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-card-foreground/70"
+                              : "rounded-full bg-card-foreground/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-card-foreground/70"
+                          }
+                        >
+                          {s.kind}
+                        </span>
+                        <span className="text-card-foreground/45">{s.dateLabel}</span>
+                        <span className="text-card-foreground/85">“{s.rawLine}”</span>
+                      </div>
+                      <p className="mt-1 text-xs text-card-foreground/45">{s.reason}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <label
+                          htmlFor={`fix-${s.skipKey}`}
+                          className="text-xs text-card-foreground/55"
+                        >
+                          Add as
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            id={`fix-${s.skipKey}`}
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step={1}
+                            value={draft}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setFixDrafts((d) => ({ ...d, [s.skipKey]: v }));
+                              setPendingFixKeys((p) => {
+                                const next = new Set(p);
+                                next.add(s.skipKey);
+                                return next;
+                              });
+                            }}
+                            placeholder="amount"
+                            className="w-24 rounded-md border border-card-foreground/15 bg-background/10 px-2 py-1 text-sm tabular-nums text-card-foreground placeholder:text-card-foreground/35 focus:border-card-foreground/40 focus:outline-none"
+                          />
+                          <span className="text-xs text-card-foreground/55">ml</span>
+                        </div>
+                        {ml !== null ? (
+                          <span className="text-xs text-card-foreground/55">
+                            ≈ {fmtOz(Math.round((ml / ML_PER_OZ) * 10) / 10)} oz
+                          </span>
+                        ) : null}
+                        {draft !== "" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFixDrafts((d) => {
+                                const next = { ...d };
+                                delete next[s.skipKey];
+                                return next;
+                              });
+                              setPendingFixKeys((p) => {
+                                const next = new Set(p);
+                                next.add(s.skipKey);
+                                return next;
+                              });
+                            }}
+                            className="text-xs text-card-foreground/45 underline-offset-2 hover:text-card-foreground hover:underline"
+                          >
+                            clear
+                          </button>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           ) : null}

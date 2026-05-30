@@ -119,6 +119,66 @@ describe("parseNotes — breast feeds with no amount are skipped", () => {
     expect(feeds).toHaveLength(1);
     expect(skipped).toHaveLength(2);
     expect(skipped.every((s) => /no amount/.test(s.reason))).toBe(true);
+    expect(skipped.every((s) => s.kind === "breast")).toBe(true);
+    expect(new Set(skipped.map((s) => s.skipKey)).size).toBe(2);
+  });
+});
+
+describe("parseNotes — formula with no amount is also skipped (not just warned)", () => {
+  it("surfaces a bare 'formula milk' as a skipped formula line with a stable skipKey", () => {
+    const { events, skipped, warnings } = parseNotes(
+      `May 2 2026
+- [ ] 9 am- formula milk
+- [ ] 1 pm- 60 ml formula milk`,
+      OPTS,
+    );
+    const feeds = events.filter((e) => e.type === "feed");
+    expect(feeds).toHaveLength(1);
+    expect(skipped).toHaveLength(1);
+    const [first] = skipped;
+    expect(first.kind).toBe("formula");
+    expect(first.reason).toMatch(/formula/i);
+    expect(first.skipKey).toMatch(/#skip#formula$/);
+    expect(first.occurredAtIso).toMatch(/^2026-05-02T14:00/); // 9am CDT → 14:00 UTC
+    expect(warnings).toHaveLength(0); // moved from warnings → skipped
+  });
+});
+
+describe("parseNotes — fixes promote a skipped line into a counted feed", () => {
+  it("turns a skipped breast line into a 50 ml breast feed when fixes supply the amount", () => {
+    const notes = `May 3 2026
+- [ ] 8 am- breast milk
+- [ ] 11 am- 60 ml formula milk`;
+    const baseline = parseNotes(notes, OPTS);
+    expect(baseline.skipped).toHaveLength(1);
+    const skipKey = baseline.skipped[0].skipKey;
+
+    const fixed = parseNotes(notes, { ...OPTS, fixes: { [skipKey]: 50 } });
+    expect(fixed.skipped).toHaveLength(0);
+    const breastFeeds = fixed.events.filter((e) => e.type === "feed" && e.kind === "breast");
+    expect(breastFeeds).toHaveLength(1);
+    const breast = breastFeeds[0];
+    expect(breast.type === "feed" && breast.amount.ml).toBe(50);
+    expect(breast.dedupeKey).toMatch(/#feed#breast#fix$/);
+  });
+
+  it("ignores zero / negative / non-finite / missing-key fixes", () => {
+    const notes = `May 4 2026
+- [ ] 9 am- breast milk
+- [ ] 10 am- formula milk`;
+    const baseline = parseNotes(notes, OPTS);
+    expect(baseline.skipped).toHaveLength(2);
+
+    const ignored = parseNotes(notes, {
+      ...OPTS,
+      fixes: {
+        [baseline.skipped[0].skipKey]: 0,
+        [baseline.skipped[1].skipKey]: -5,
+        "unknown-key": 30,
+      },
+    });
+    expect(ignored.skipped).toHaveLength(2);
+    expect(ignored.events.filter((e) => e.type === "feed")).toHaveLength(0);
   });
 });
 

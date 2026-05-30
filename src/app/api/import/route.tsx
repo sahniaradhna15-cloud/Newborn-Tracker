@@ -32,6 +32,28 @@ import { withUserContext } from "@/lib/with-user-context";
 
 const MAX_RAW_CHARS = 200_000;
 const UUID_NAMESPACE_HEX = "a3f1e2d45b6c47899abcde0123456789"; // fixed namespace for import dedupe
+const MAX_FIXES = 1_000;
+
+/**
+ * Trust-boundary scrub for the `fixes` body — drop anything that isn't a plain
+ * object of string→positive-finite-number. The parser ignores invalid entries
+ * anyway, but pruning here keeps the size bounded and the log line truthful.
+ */
+function sanitizeFixes(raw: unknown): Record<string, number> | undefined {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length === 0) return undefined;
+  const clean: Record<string, number> = {};
+  let kept = 0;
+  for (const [key, value] of entries) {
+    if (kept >= MAX_FIXES) break;
+    if (typeof key !== "string" || key === "") continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
+    clean[key] = value;
+    kept += 1;
+  }
+  return kept > 0 ? clean : undefined;
+}
 
 /** Deterministic UUIDv5 of `name` — same notes ⇒ same client_uuid ⇒ idempotent re-import. */
 function deterministicUuid(name: string): string {
@@ -68,7 +90,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  let body: { rawText?: unknown; commit?: unknown };
+  let body: { rawText?: unknown; commit?: unknown; fixes?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -77,6 +99,7 @@ export async function POST(req: NextRequest) {
 
   const rawText = typeof body.rawText === "string" ? body.rawText : "";
   const commit = body.commit === true;
+  const fixes = sanitizeFixes(body.fixes);
   if (rawText.trim() === "") {
     return NextResponse.json({ ok: false, error: "empty_notes" }, { status: 400 });
   }
@@ -109,7 +132,7 @@ export async function POST(req: NextRequest) {
 
   let parsed: ReturnType<typeof parseNotes>;
   try {
-    parsed = parseNotes(rawText, baby);
+    parsed = parseNotes(rawText, { ...baby, fixes });
   } catch (error) {
     console.error(
       JSON.stringify({

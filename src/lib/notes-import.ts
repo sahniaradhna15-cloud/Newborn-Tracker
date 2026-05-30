@@ -14,8 +14,12 @@
  *  - "breast milk – X min" → a breast-milk feed via the user's OWN minutes→ml
  *    table (much lower than a generic oz/min estimate — see {@link minutesToMl}).
  *  - "1 breast"            → 15 ml.
- *  - "little breast milk" / any breast feed with NO amount → **skipped** (the
- *    user asked to ignore these; they are surfaced as skipped, never counted).
+ *  - "little breast milk" / any breast feed with NO amount → **skipped** with a
+ *    stable `skipKey` so the UI can prompt for an amount; supplying one via
+ *    {@link ImportOptions.fixes} promotes it back into a counted event.
+ *  - "formula milk" with NO readable amount → same treatment as breast (skipped
+ *    with a `skipKey`, fixable from the UI). Both kinds surface together so the
+ *    parent can review and rescue either.
  *  - "pee" / "poop" / "poty" / counts ("2 pee and 2 poop", "poop 4 times",
  *    "twice"/"once") → diaper changes, tallied per day.
  *  - Times: am/pm (explicit or inferred), typos (`9;45`, `70 am`→ml,
@@ -53,6 +57,13 @@ export type ImportOptions = {
   /** Baby weights (oz) for the informational per-day target band. */
   birthWeightOz: number | null;
   currentWeightOz: number | null;
+  /**
+   * User-supplied amounts (ml) for lines the parser would otherwise skip
+   * (breast/formula with no readable amount). Keyed by {@link SkippedLine.skipKey}.
+   * A positive value promotes the skipped line into a counted feed event of the
+   * matching kind; missing/zero/non-finite values leave it skipped.
+   */
+  fixes?: Record<string, number>;
 };
 
 export type UnitAmount = { ml: number; oz: number };
@@ -78,7 +89,16 @@ export type ImportDiaper = {
 
 export type ImportEvent = ImportFeed | ImportDiaper;
 
-export type SkippedLine = { rawLine: string; reason: string; dateLabel: string };
+export type SkippedLine = {
+  /** Stable key for this skipped slot — used by the UI to round-trip a user fix. */
+  skipKey: string;
+  rawLine: string;
+  reason: string;
+  dateLabel: string;
+  kind: "formula" | "breast";
+  /** The time this line would have used had it had an amount — so a fix lands in the right day window. */
+  occurredAtIso: string;
+};
 
 export type DayPreview = {
   dayStartIso: string;
@@ -227,6 +247,14 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
+/** Read a positive, finite ml fix from the user-supplied map; null when absent/invalid. */
+function readFix(fixes: Record<string, number> | undefined, skipKey: string): number | null {
+  if (!fixes) return null;
+  const raw = fixes[skipKey];
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return null;
+  return raw;
+}
+
 /** A `fromZonedTime`-parseable wall-clock string for a calendar date + minutes. */
 function wallClock(y: number, m: number, d: number, todMinutes: number): string {
   // Carry day overflow (dayOffset baked into todMinutes via the caller's date math).
@@ -366,12 +394,26 @@ export function parseNotes(raw: string, opts: ImportOptions): ParseResult {
     // --- feeds ---
     if (isFeedLine) {
       const { feeds, breastNoAmount, formulaNoAmount } = extractFeeds(line);
-      if (breastNoAmount) {
-        skipped.push({ rawLine: line, reason: "breast feed with no amount written", dateLabel: headerLabel });
-      }
-      if (formulaNoAmount) {
-        warnings.push(`${headerLabel}: "${line}" mentions formula with no readable amount — skipped that part`);
-      }
+      const fixOrSkip = (kind: "breast" | "formula", reason: string) => {
+        const skipKey = `${keyBase}#skip#${kind}`;
+        const fixMl = readFix(opts.fixes, skipKey);
+        if (fixMl !== null) {
+          events.push({
+            type: "feed",
+            kind,
+            occurredAtIso,
+            amount: { ml: fixMl, oz: mlToOz(fixMl) },
+            rawLine: line,
+            // `#fix` — distinct from inline-parsed feeds so the dedupe key stays
+            // stable across re-imports even if the amount is edited.
+            dedupeKey: `${keyBase}#feed#${kind}#fix`,
+          });
+          return;
+        }
+        skipped.push({ skipKey, rawLine: line, reason, dateLabel: headerLabel, kind, occurredAtIso });
+      };
+      if (breastNoAmount) fixOrSkip("breast", "breast feed with no amount written");
+      if (formulaNoAmount) fixOrSkip("formula", "formula feed with no amount written");
       feeds.forEach((f, i) => {
         events.push({
           type: "feed",
