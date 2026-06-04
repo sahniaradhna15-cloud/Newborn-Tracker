@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -32,11 +33,11 @@ export default function OnboardingPage() {
   } = useForm<FormValues>({
     resolver: zodResolver(FormSchema),
     defaultValues: {
-      household_name: "My Family",
-      owner_display_name: "Mom",
-      baby_name: "Anay Srivastava",
-      baby_dob: "2026-04-23",
-      baby_birth_weight_oz: 109,
+      household_name: "",
+      owner_display_name: "",
+      baby_name: "",
+      baby_dob: "",
+      baby_birth_weight_oz: undefined,
     },
   });
 
@@ -117,18 +118,21 @@ export default function OnboardingPage() {
           <Field
             id="household_name"
             label="Household name"
+            placeholder="e.g. The Garcia Family"
             error={errors.household_name?.message}
             {...register("household_name")}
           />
           <Field
             id="owner_display_name"
             label="Your name on logs (e.g. Mom)"
+            placeholder="e.g. Mom"
             error={errors.owner_display_name?.message}
             {...register("owner_display_name")}
           />
           <Field
             id="baby_name"
             label="Baby's name"
+            placeholder="Your baby's name"
             error={errors.baby_name?.message}
             {...register("baby_name")}
           />
@@ -144,6 +148,7 @@ export default function OnboardingPage() {
             label="Birth weight (oz)"
             type="number"
             step="0.1"
+            placeholder="e.g. 118"
             error={errors.baby_birth_weight_oz?.message}
             {...register("baby_birth_weight_oz")}
           />
@@ -151,6 +156,12 @@ export default function OnboardingPage() {
             {isSubmitting ? "Setting up…" : "Create"}
           </Button>
         </form>
+        <p className="mt-5 border-t border-card-foreground/10 pt-4 text-center text-sm text-card-foreground/70">
+          Already set up?{" "}
+          <Link href="/recover" className="font-medium text-card-foreground underline underline-offset-4">
+            Sign in with your recovery code
+          </Link>
+        </p>
       </Card>
     </main>
   );
