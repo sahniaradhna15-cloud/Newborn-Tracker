@@ -95,6 +95,8 @@ type ChartDatum = {
   pee: number;
   poop: number;
   status: Status;
+  /** False when nothing was fed that day — no intake judgment applies. */
+  logged: boolean;
 };
 
 function IntakeTooltip({ active, payload }: { active?: boolean; payload?: { payload: ChartDatum }[] }) {
@@ -146,6 +148,7 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
       const total = roundOz(d.feeds.total_oz);
       const low = roundOz(d.target.low_oz);
       const high = roundOz(d.target.high_oz);
+      const logged = d.feeds.count > 0;
       return {
         key: d.day_start,
         axisLabel: axisFmt.format(new Date(d.day_start)),
@@ -157,21 +160,33 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
         ageDays: d.target.age_days,
         pee: d.diapers.pee_count,
         poop: d.diapers.poop_count,
-        status: statusOf(total, low, high),
+        // A day with no feeds gets no intake verdict — keep it neutral so a
+        // blank day is never colored or counted as "a bit under".
+        status: logged ? statusOf(total, low, high) : "within",
+        logged,
       };
     });
   }, [selected, range, timeZone]);
 
+  // Did anything (a feed OR a diaper) happen in this range? A brand-new or
+  // quiet range should show the calm empty message, not a wall of zero rows.
+  const anyLogged = useMemo(
+    () => selected.some((d) => d.feeds.count > 0 || d.diapers.change_count > 0),
+    [selected],
+  );
+
+  // Averages and the "on track" tally only consider days he was actually fed,
+  // so an empty day never drags the average to zero or counts against him.
   const stats = useMemo(() => {
-    if (data.length === 0) return null;
-    const totals = data.map((d) => d.total);
-    const avg = roundOz(totals.reduce((sum, t) => sum + t, 0) / totals.length);
-    const inBand = data.filter((d) => d.status === "within").length;
+    const fed = data.filter((d) => d.logged);
+    if (fed.length === 0) return null;
+    const avg = roundOz(fed.reduce((sum, d) => sum + d.total, 0) / fed.length);
+    const inBand = fed.filter((d) => d.status === "within").length;
     const includesToday = range !== "last_month";
     return {
       avg,
       inBand,
-      count: data.length,
+      count: fed.length,
       includesToday,
       today: data[data.length - 1] ?? null,
       yesterday: data.length > 1 ? data[data.length - 2] : null,
@@ -213,7 +228,7 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
         </div>
       </div>
 
-      {data.length === 0 ? (
+      {data.length === 0 || !anyLogged ? (
         <p className="mt-10 mb-8 text-center text-sm text-card-foreground/55">
           {range === "last_month" ? "No feeds logged last month." : "No feeds logged in this range yet."}
         </p>
@@ -258,10 +273,10 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
 
           {stats ? (
             <p className="mt-3 text-sm text-card-foreground/70">
-              {stats.includesToday && stats.today ? (
+              {stats.includesToday && stats.today?.logged ? (
                 <>
                   <span className="text-card-foreground">Today {formatOz(stats.today.total)} oz</span>
-                  {stats.yesterday ? <> · Yesterday {formatOz(stats.yesterday.total)} oz</> : null} ·{" "}
+                  {stats.yesterday?.logged ? <> · Yesterday {formatOz(stats.yesterday.total)} oz</> : null} ·{" "}
                 </>
               ) : null}
               avg {formatOz(stats.avg)} oz/day · {stats.inBand} of {stats.count} days on track
@@ -295,32 +310,32 @@ export function IntakeTrendChart({ days, timeZone }: { days: DaySummaryPayload[]
             Breast feeds use your own estimate, so totals can read a little low — his real intake is likely higher.
           </p>
 
-          <ul className="mt-5 space-y-3 border-t border-card-foreground/10 pt-4 sm:space-y-1.5">
+          <ul className="mt-5 divide-y divide-card-foreground/10 border-t border-card-foreground/10">
             {selected.map((d) => {
+              const logged = d.feeds.count > 0;
               const status = statusOf(d.feeds.total_oz, d.target.low_oz, d.target.high_oz);
-              const statusPill = (
-                <span
-                  className={
-                    status === "below"
-                      ? "rounded-full bg-amber-100/70 px-2 py-0.5 text-amber-800"
-                      : "rounded-full bg-card-foreground/5 px-2 py-0.5 text-card-foreground/60"
-                  }
-                >
-                  {STATUS_LABEL[status]}
-                </span>
-              );
               return (
-                <li
-                  key={d.day_start}
-                  className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3"
-                >
-                  <span className="text-card-foreground/80 sm:truncate">{fullDayLabel(d.day_start, timeZone)}</span>
-                  <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-card-foreground/55 tabular-nums sm:shrink-0 sm:flex-nowrap sm:gap-2">
-                    <span>
-                      {formatOz(d.feeds.total_oz)} oz · {d.diapers.pee_count} wet · {d.diapers.poop_count} dirty
+                <li key={d.day_start} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate text-card-foreground/80">{fullDayLabel(d.day_start, timeZone)}</p>
+                    <p className="mt-0.5 text-xs text-card-foreground/50 tabular-nums">
+                      {logged ? `${formatOz(d.feeds.total_oz)} oz · ` : ""}
+                      {d.diapers.pee_count} wet · {d.diapers.poop_count} dirty
+                    </p>
+                  </div>
+                  {logged ? (
+                    <span
+                      className={
+                        status === "below"
+                          ? "shrink-0 rounded-full bg-amber-100/70 px-2 py-0.5 text-xs text-amber-800"
+                          : "shrink-0 rounded-full bg-card-foreground/5 px-2 py-0.5 text-xs text-card-foreground/60"
+                      }
+                    >
+                      {STATUS_LABEL[status]}
                     </span>
-                    {statusPill}
-                  </span>
+                  ) : (
+                    <span className="shrink-0 text-xs text-card-foreground/40">no feeds</span>
+                  )}
                 </li>
               );
             })}
