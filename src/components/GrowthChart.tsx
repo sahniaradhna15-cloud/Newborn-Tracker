@@ -199,6 +199,33 @@ export function GrowthChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestRaw, previousRaw, birthDate, babyName, unit]);
 
+  // Overall direction across ALL logged readings (oldest → newest), so the
+  // header can answer "is he gaining?" at a glance. We report the net change,
+  // the span it covers, and an average weekly rate (what pediatricians watch).
+  // A tiny dead-band avoids calling scale jitter a real "loss". Tone §11.3:
+  // a non-increasing trend stays calm and nudges to the pediatrician — never
+  // alarmist, never red.
+  const trend = useMemo(() => {
+    if (sortedNewestFirst.length < 2) return null;
+    const newest = sortedNewestFirst[0];
+    const oldest = sortedNewestFirst[sortedNewestFirst.length - 1];
+    const netDisplay = round2(
+      toUnit(newest.weightOz * OZ_TO_KG) - toUnit(oldest.weightOz * OZ_TO_KG),
+    );
+    const days = Math.max(
+      1,
+      Math.round(
+        (new Date(newest.occurredAt).getTime() - new Date(oldest.occurredAt).getTime()) /
+          (24 * 60 * 60 * 1000),
+      ),
+    );
+    const perWeek = round2((netDisplay / days) * 7);
+    const direction: "up" | "down" | "flat" =
+      netDisplay > 0.05 ? "up" : netDisplay < -0.05 ? "down" : "flat";
+    return { netDisplay, days, perWeek, direction, readings: sortedNewestFirst.length };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedNewestFirst, unit]);
+
   return (
     <section
       aria-label={`${babyName}'s growth`}
@@ -233,6 +260,37 @@ export function GrowthChart({
                 <span className="text-xs text-card-foreground/55">{hero.ageDays} days old</span>
               </div>
               <p className="mt-3 max-w-md text-sm text-card-foreground/70">{hero.sentence}</p>
+              {trend ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span
+                    className={
+                      trend.direction === "up"
+                        ? "inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                        : "inline-flex items-center gap-1.5 rounded-full bg-card-foreground/[0.07] px-2.5 py-1 text-xs font-medium text-card-foreground/75"
+                    }
+                  >
+                    <TrendArrow direction={trend.direction} />
+                    {trend.direction === "up"
+                      ? "Gaining steadily"
+                      : trend.direction === "flat"
+                        ? "Holding steady"
+                        : "Dipped recently"}
+                  </span>
+                  <span className="text-xs text-card-foreground/55 tabular-nums">
+                    {trend.netDisplay > 0 ? "+" : trend.netDisplay < 0 ? "−" : ""}
+                    {Math.abs(trend.netDisplay).toFixed(2)} {unit} over {trend.days}{" "}
+                    {trend.days === 1 ? "day" : "days"}
+                    {trend.direction === "up"
+                      ? ` · ~${Math.abs(trend.perWeek).toFixed(2)} ${unit}/week`
+                      : ""}
+                  </span>
+                  {trend.direction !== "up" ? (
+                    <span className="w-full text-xs text-card-foreground/55">
+                      Babies often dip before a growth spurt — your pediatrician will track this with you.
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </>
           ) : (
             <p className="mt-2 max-w-md text-sm text-card-foreground/70">
@@ -422,6 +480,32 @@ function PercentileExplainer() {
         </p>
       </div>
     </details>
+  );
+}
+
+/**
+ * A small directional arrow for the weight-trend badge: up for gaining, down
+ * for a dip, a flat dash for steady. Decorative — the adjacent text label
+ * ("Gaining steadily", etc.) carries the meaning for screen readers.
+ */
+function TrendArrow({ direction }: { direction: "up" | "down" | "flat" }) {
+  const path =
+    direction === "up" ? "M6 9.5V2.5M6 2.5L3 5.5M6 2.5L9 5.5"
+      : direction === "down" ? "M6 2.5V9.5M6 9.5L3 6.5M6 9.5L9 6.5"
+        : "M2.5 6H9.5";
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      className="size-3 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={path} />
+    </svg>
   );
 }
 
