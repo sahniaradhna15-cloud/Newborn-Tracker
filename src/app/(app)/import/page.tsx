@@ -24,15 +24,17 @@ export default async function ImportPage() {
       </Link>
       <h1 className="mb-1 text-2xl text-foreground">Import past notes</h1>
       <p className="mb-6 text-sm text-foreground/60">
-        Paste or upload your daily notes and we’ll turn them into feeds and diapers. You’ll see every day’s totals to
-        review before anything is saved — and re-importing is always safe.
+        Paste or upload your daily notes in whatever format you keep them — we’ll read the dates, amounts, and diapers
+        and turn them into feeds and diapers. You’ll see every day’s totals to review before anything is saved — and
+        re-importing is always safe.
       </p>
 
       <ImportConsole />
 
       <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
-        Volumes are read in ml and shown in ml and oz. Breast feeds use your own minutes→ml conversion; entries with no
-        amount are skipped. Not medical advice.
+        To read free-form notes, the text you paste is sent to an AI service (Anthropic) to interpret — it is not used
+        to train models. Volumes are shown in ml and oz; ounces are read at 30 ml each. Nothing is saved until you
+        review and press Import. Not medical advice.
       </p>
     </main>
   );
