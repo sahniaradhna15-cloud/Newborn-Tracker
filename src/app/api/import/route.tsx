@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { isAiNormalizeConfigured, normalizeNotesWithAi } from "@/lib/ai-notes-normalize";
 import { babies, households } from "@/lib/db/schema";
 import { parseNotes, type ImportEvent } from "@/lib/notes-import";
 import { recordEvent, type AuthContext } from "@/lib/record-event";
@@ -68,6 +69,46 @@ function deterministicUuid(name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
+/**
+ * Decide the text to hand the deterministic parser.
+ *  - `provided` (the AI-normalized text echoed from a prior preview) is reused
+ *    verbatim so commit/recalculate parse EXACTLY what was previewed — same
+ *    dedupe keys, same skip keys, no second LLM call, no drift.
+ *  - Otherwise, when an LLM is configured (GROQ_API_KEY set), the model
+ *    normalizes the raw free-form notes into the canonical format.
+ *  - With no key — or if the LLM call fails — fall back to parsing the raw text
+ *    with the rule parser, so import never hard-breaks.
+ */
+async function resolveNotesText(
+  rawText: string,
+  defaultYear: number,
+  provided: string | undefined,
+  userId: string,
+): Promise<{ text: string; aiUsed: boolean }> {
+  if (provided !== undefined && provided.trim() !== "") {
+    return { text: provided, aiUsed: true };
+  }
+  if (!isAiNormalizeConfigured()) {
+    return { text: rawText, aiUsed: false };
+  }
+  try {
+    const normalized = await normalizeNotesWithAi(rawText, defaultYear);
+    return normalized.trim() === "" ? { text: rawText, aiUsed: false } : { text: normalized, aiUsed: true };
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "import_ai_normalize_failed",
+        route: "/api/import",
+        error: error instanceof Error ? error.message : String(error),
+        user_id: userId,
+        fix_suggestion:
+          "LLM normalization failed — falling back to the rule parser. Check GROQ_API_KEY validity, the GROQ_MODEL id, and Groq rate limits (free tier ~6K TPM).",
+      }),
+    );
+    return { text: rawText, aiUsed: false };
+  }
+}
+
 /** Lift one parsed import event into the canonical wire shape for recordEvent. */
 function toInbound(e: ImportEvent): unknown {
   const base = {
@@ -90,7 +131,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  let body: { rawText?: unknown; commit?: unknown; fixes?: unknown };
+  let body: { rawText?: unknown; commit?: unknown; fixes?: unknown; normalizedText?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -100,6 +141,12 @@ export async function POST(req: NextRequest) {
   const rawText = typeof body.rawText === "string" ? body.rawText : "";
   const commit = body.commit === true;
   const fixes = sanitizeFixes(body.fixes);
+  // The AI-normalized text echoed from a prior preview, reused so commit and
+  // recalculate parse exactly what was previewed (stable keys, one LLM call).
+  const providedNormalized =
+    typeof body.normalizedText === "string" && body.normalizedText.length <= MAX_RAW_CHARS
+      ? body.normalizedText
+      : undefined;
   if (rawText.trim() === "") {
     return NextResponse.json({ ok: false, error: "empty_notes" }, { status: 400 });
   }
@@ -130,9 +177,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "no_active_baby" }, { status: 404 });
   }
 
+  const { text: notesText } = await resolveNotesText(rawText, baby.defaultYear, providedNormalized, ctx.user_id);
+
   let parsed: ReturnType<typeof parseNotes>;
   try {
-    parsed = parseNotes(rawText, { ...baby, fixes });
+    parsed = parseNotes(notesText, { ...baby, fixes });
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -174,6 +223,9 @@ export async function POST(req: NextRequest) {
       skipped: parsed.skipped,
       warnings: parsed.warnings,
       counts,
+      // Echo the exact text the parser saw so commit/recalculate reuse it
+      // verbatim (one LLM call per import; preview === commit).
+      normalizedText: notesText,
     });
   }
 

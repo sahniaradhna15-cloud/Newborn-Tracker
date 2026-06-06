@@ -24,15 +24,17 @@ export default async function ImportPage() {
       </Link>
       <h1 className="mb-1 text-2xl text-foreground">Import past notes</h1>
       <p className="mb-6 text-sm text-foreground/60">
-        Paste or upload your daily notes and we’ll turn them into feeds and diapers. You’ll see every day’s totals to
-        review before anything is saved — and re-importing is always safe.
+        Paste or upload your daily notes in whatever format you keep them — we’ll read the dates, amounts, diapers, and
+        any other remarks and turn them into entries. You’ll see every day’s totals to review before anything is saved —
+        and re-importing is always safe.
       </p>
 
       <ImportConsole />
 
       <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
-        Dates can be month names (June 1) or numbers (6/1/2026, 2026-06-03). Amounts can be ml or oz; breast feeds in
-        minutes use your own minutes→ml conversion. Entries with no amount are skipped. Not medical advice.
+        To read free-form notes, the text you paste is sent to an AI service (Groq) to interpret — it isn’t stored or
+        used to train models. Dates can be month names or numbers; amounts can be ml or oz. Nothing is saved until you
+        review and press Import. Not medical advice.
       </p>
     </main>
   );
