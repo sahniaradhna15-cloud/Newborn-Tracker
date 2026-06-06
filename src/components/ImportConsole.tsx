@@ -46,8 +46,6 @@ type PreviewResponse = {
   skipped: SkippedLine[];
   warnings: string[];
   counts: Counts;
-  /** AI-normalized text the parser saw; echoed back on commit so it's reused verbatim. */
-  normalizedText?: string;
 };
 type CommitResponse = { ok: true; mode: "commit"; accepted: number; duplicate: number; failed: number; counts: Counts };
 
@@ -78,11 +76,6 @@ export function ImportConsole() {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [rawText, setRawText] = useState("");
-  // The AI-normalized text from the latest preview. Sent back on Recalculate
-  // and Import so the server reuses it verbatim (one AI call per import; stable
-  // skip/dedupe keys). Cleared whenever the raw notes change so a fresh edit
-  // gets a fresh normalization.
-  const [normalizedText, setNormalizedText] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [result, setResult] = useState<CommitResponse | null>(null);
   const [busy, setBusy] = useState<"preview" | "commit" | null>(null);
@@ -104,7 +97,6 @@ export function ImportConsole() {
     if (!file) return;
     const text = await file.text();
     setRawText(text);
-    setNormalizedText(null);
     setPreview(null);
     setResult(null);
     setFixDrafts({});
@@ -119,7 +111,7 @@ export function ImportConsole() {
       const res = await fetch("/api/import", {
         method: "POST",
         headers: HEADERS,
-        body: JSON.stringify({ rawText, commit, fixes, normalizedText }),
+        body: JSON.stringify({ rawText, commit, fixes }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
@@ -131,10 +123,7 @@ export function ImportConsole() {
         setResult(data as CommitResponse);
         router.refresh();
       } else {
-        const previewData = data as PreviewResponse;
-        setPreview(previewData);
-        // Hold the AI-normalized text so Recalculate/Import reuse it verbatim.
-        setNormalizedText(previewData.normalizedText ?? null);
+        setPreview(data as PreviewResponse);
         setResult(null);
         // Round-trip done — drafts the server has now seen are no longer pending.
         setPendingFixKeys(new Set());
@@ -157,7 +146,6 @@ export function ImportConsole() {
           value={rawText}
           onChange={(e) => {
             setRawText(e.target.value);
-            setNormalizedText(null);
             setPreview(null);
             setResult(null);
             setFixDrafts({});
