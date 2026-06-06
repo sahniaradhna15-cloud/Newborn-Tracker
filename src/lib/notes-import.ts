@@ -226,17 +226,58 @@ export function parseDiaperCounts(line: string): DiaperCount {
   };
 }
 
-function isDateHeader(line: string, defaultYear: number): { y: number; m: number; d: number } | null {
-  const s = line.trim().replace(/[.,]+$/g, "").replace(/,/g, " ").replace(/\s+/g, " ").toLowerCase();
-  const monthDay = s.match(/^([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?$/);
-  if (monthDay && MONTHS[monthDay[1]]) {
-    return { y: monthDay[3] ? Number(monthDay[3]) : defaultYear, m: MONTHS[monthDay[1]], d: Number(monthDay[2]) };
+/** Resolve a header's year: absent → the notes' default; 2-digit → 20xx. */
+function normalizeYear(raw: string | undefined, defaultYear: number): number {
+  if (!raw) return defaultYear;
+  const n = Number(raw);
+  return raw.length <= 2 ? 2000 + n : n;
+}
+
+function isValidYmd(y: number, m: number, d: number): boolean {
+  return m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 2000 && y <= 2100;
+}
+
+/**
+ * Purely-numeric date headers: ISO `2026-06-01`, and slash/dot/dash forms like
+ * `6/1`, `6/1/2026`, `01-06-26`. Ambiguous day/month order defaults to
+ * **month-first (US)**; a first field > 12 is read as day-first.
+ */
+function numericDateHeader(s: string, defaultYear: number): { y: number; m: number; d: number } | null {
+  const iso = s.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/);
+  if (iso) {
+    const y = Number(iso[1]);
+    const m = Number(iso[2]);
+    const d = Number(iso[3]);
+    return isValidYmd(y, m, d) ? { y, m, d } : null;
   }
-  const dayMonth = s.match(/^(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?$/);
-  if (dayMonth && MONTHS[dayMonth[2]]) {
-    return { y: dayMonth[3] ? Number(dayMonth[3]) : defaultYear, m: MONTHS[dayMonth[2]], d: Number(dayMonth[1]) };
+  const parts = s.match(/^(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?$/);
+  if (parts) {
+    const a = Number(parts[1]);
+    const b = Number(parts[2]);
+    const y = normalizeYear(parts[3], defaultYear);
+    const [m, d] = a > 12 && b <= 12 ? [b, a] : [a, b];
+    return isValidYmd(y, m, d) ? { y, m, d } : null;
   }
   return null;
+}
+
+function isDateHeader(line: string, defaultYear: number): { y: number; m: number; d: number } | null {
+  const s = line
+    .trim()
+    .toLowerCase()
+    .replace(/[,]+/g, " ")
+    .replace(/(\d{1,2})(st|nd|rd|th)\b/g, "$1") // ordinals: "june 1st" → "june 1"
+    .replace(/\s+/g, " ")
+    .replace(/\.+$/g, "");
+  const monthDay = s.match(/^([a-z]+)\s+(\d{1,2})(?:\s+(\d{2,4}))?$/);
+  if (monthDay && MONTHS[monthDay[1]]) {
+    return { y: normalizeYear(monthDay[3], defaultYear), m: MONTHS[monthDay[1]], d: Number(monthDay[2]) };
+  }
+  const dayMonth = s.match(/^(\d{1,2})\s+([a-z]+)(?:\s+(\d{2,4}))?$/);
+  if (dayMonth && MONTHS[dayMonth[2]]) {
+    return { y: normalizeYear(dayMonth[3], defaultYear), m: MONTHS[dayMonth[2]], d: Number(dayMonth[1]) };
+  }
+  return numericDateHeader(s, defaultYear);
 }
 
 function stripBullet(line: string): string {
@@ -276,18 +317,23 @@ type FeedHit = { kind: "formula" | "breast"; ml: number };
  * The BEFORE form requires a unit token AND a `(?<![:;\d])` guard so a clock
  * minute ("8:00 am formula") is never mistaken for a volume.
  */
+/** Convert a parsed amount to ml — ounces scale up, everything else is ml. */
+function toMl(value: number, unit: string | undefined): number {
+  return unit && /^(oz|ounce)/.test(unit) ? value * ML_PER_OZ : value;
+}
+
 function amountForKeyword(s: string, keyword: string): number | null {
-  const after = new RegExp(`${keyword}(?:\\s*milk)?\\s*[-–:(]*\\s*(\\d+(?:\\.\\d+)?)\\s*(?:ml|mil|gm)?`).exec(s);
-  if (after && Number(after[1]) > 0) return Number(after[1]);
-  const before = new RegExp(`(?<![:;\\d])(\\d+(?:\\.\\d+)?)\\s*(?:ml|mil|milk|gm|am)\\s*${keyword}`).exec(s);
-  if (before && Number(before[1]) > 0) return Number(before[1]);
+  const after = new RegExp(`${keyword}(?:\\s*milk)?\\s*[-–:(]*\\s*(\\d+(?:\\.\\d+)?)\\s*(ml|mil|gm|oz|ounces?)?`).exec(s);
+  if (after && Number(after[1]) > 0) return toMl(Number(after[1]), after[2]);
+  const before = new RegExp(`(?<![:;\\d])(\\d+(?:\\.\\d+)?)\\s*(ml|mil|milk|gm|am|oz|ounces?)\\s*${keyword}`).exec(s);
+  if (before && Number(before[1]) > 0) return toMl(Number(before[1]), before[2]);
   return null;
 }
 
-/** First explicit "<n> ml" anywhere (the unit guards against grabbing a time). */
+/** First explicit "<n> ml" / "<n> oz" anywhere (the unit guards against grabbing a time). */
 function anyExplicitMl(s: string): number | null {
-  const m = s.match(/(\d+(?:\.\d+)?)\s*(?:ml|mil|gm)\b/);
-  return m && Number(m[1]) > 0 ? Number(m[1]) : null;
+  const m = s.match(/(\d+(?:\.\d+)?)\s*(ml|mil|gm|oz|ounces?)\b/);
+  return m && Number(m[1]) > 0 ? toMl(Number(m[1]), m[2]) : null;
 }
 
 function extractFeeds(rawLine: string): { feeds: FeedHit[]; breastNoAmount: boolean; formulaNoAmount: boolean } {

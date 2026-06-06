@@ -31,8 +31,8 @@ export default async function ImportPage() {
       <ImportConsole />
 
       <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
-        Volumes are read in ml and shown in ml and oz. Breast feeds use your own minutes→ml conversion; entries with no
-        amount are skipped. Not medical advice.
+        Dates can be month names (June 1) or numbers (6/1/2026, 2026-06-03). Amounts can be ml or oz; breast feeds in
+        minutes use your own minutes→ml conversion. Entries with no amount are skipped. Not medical advice.
       </p>
     </main>
   );
