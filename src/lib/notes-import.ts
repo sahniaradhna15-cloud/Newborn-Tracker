@@ -34,8 +34,7 @@ import { fromZonedTime } from "date-fns-tz";
 
 import { dailyTargetRange } from "./targets";
 import { dayNumberSinceBirth, getDayWindow } from "./day-window";
-
-const ML_PER_OZ = 29.5735;
+import { ML_PER_OZ, mlToOz } from "./units";
 // A new calendar day is only inferred on a PM → early-AM jump (a real midnight
 // crossing). A plain backward step (e.g. "1:10 pm" logged before "11:00 am") is
 // just an out-of-order entry on the SAME day, not a new one.
@@ -126,9 +125,7 @@ export type ParseResult = {
 /* small pure helpers (exported for unit tests)                        */
 /* ------------------------------------------------------------------ */
 
-export function mlToOz(ml: number): number {
-  return Math.round((ml / ML_PER_OZ) * 10) / 10;
-}
+export { mlToOz };
 
 /** The user's own nursing-minutes → ml table (ranges collapse to a midpoint). */
 export function minutesToMl(minStart: number, minEnd?: number): number {

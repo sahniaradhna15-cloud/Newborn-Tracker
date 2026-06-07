@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WhenPicker } from "@/components/WhenPicker";
 import { submitOrQueue } from "@/lib/offline-queue";
+import { mlToOz, ozToMl, type VolumeUnit } from "@/lib/units";
 import { FeedInput } from "@/lib/voice-parser";
 
 type FeedKind = "nursing" | "pumped" | "formula";
@@ -45,11 +46,28 @@ function deriveSide(isLeftOn: boolean, isRightOn: boolean): FeedSide | undefined
   return undefined;
 }
 
+/** Parse a free-typed volume field; blank or non-numeric yields undefined. */
+function parseVolume(raw: string): number | undefined {
+  if (raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Convert a displayed value in the chosen unit to canonical ounces. */
+function displayToOz(raw: string, unit: VolumeUnit): number | undefined {
+  const n = parseVolume(raw);
+  if (n === undefined) return undefined;
+  return unit === "ml" ? mlToOz(n) : n;
+}
+
 export function FeedForm() {
   const router = useRouter();
   const [kind, setKind] = useState<FeedKind>("nursing");
   const [isLeftOn, setIsLeftOn] = useState(false);
   const [isRightOn, setIsRightOn] = useState(false);
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>("oz");
+  const [volumeDisplay, setVolumeDisplay] = useState("");
+  const [wastedDisplay, setWastedDisplay] = useState("");
   const [occurredIso, setOccurredIso] = useState<string>(
     new Date().toISOString(),
   );
@@ -78,6 +96,29 @@ export function FeedForm() {
   function pickOccurred(iso: string) {
     setOccurredIso(iso);
     setValue("occurred_at", iso, { shouldValidate: true });
+  }
+
+  // The visible inputs hold the user's chosen unit; RHF always holds canonical oz.
+  function changeVolume(raw: string) {
+    setVolumeDisplay(raw);
+    setValue("volume_oz", displayToOz(raw, volumeUnit), { shouldValidate: true });
+  }
+  function changeWasted(raw: string) {
+    setWastedDisplay(raw);
+    setValue("wasted_oz", displayToOz(raw, volumeUnit), { shouldValidate: true });
+  }
+  // Switching unit re-labels the same physical amount: oz stays canonical, only
+  // the displayed number is re-expressed so "3 oz" becomes "89 ml", not "3 ml".
+  function selectVolumeUnit(next: VolumeUnit) {
+    if (next === volumeUnit) return;
+    const reexpress = (raw: string): string => {
+      const oz = displayToOz(raw, volumeUnit);
+      if (oz === undefined) return raw;
+      return String(next === "ml" ? ozToMl(oz) : oz);
+    };
+    setVolumeDisplay(reexpress);
+    setWastedDisplay(reexpress);
+    setVolumeUnit(next);
   }
 
   const onSubmit: SubmitHandler<FormOut> = async (values) => {
@@ -171,16 +212,39 @@ export function FeedForm() {
         ) : (
           <>
             <div className="space-y-1.5">
-              <Label htmlFor="volume_oz">Volume (oz)</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="volume_oz">Volume ({volumeUnit})</Label>
+                <div className="flex gap-1" role="group" aria-label="Volume unit">
+                  {(["oz", "ml"] as const).map((u) => (
+                    <Button
+                      key={u}
+                      type="button"
+                      size="sm"
+                      variant={volumeUnit === u ? "default" : "outline"}
+                      className="h-7 px-3 text-xs"
+                      onClick={() => selectVolumeUnit(u)}
+                      aria-pressed={volumeUnit === u}
+                    >
+                      {u}
+                    </Button>
+                  ))}
+                </div>
+              </div>
               <Input
                 id="volume_oz"
                 type="number"
                 inputMode="decimal"
-                step="0.1"
-                min={0.1}
-                max={20}
-                {...register("volume_oz")}
+                step={volumeUnit === "ml" ? "1" : "0.1"}
+                min={volumeUnit === "ml" ? 1 : 0.1}
+                max={volumeUnit === "ml" ? 600 : 20}
+                value={volumeDisplay}
+                onChange={(e) => changeVolume(e.target.value)}
               />
+              {volumeUnit === "ml" && displayToOz(volumeDisplay, "ml") !== undefined ? (
+                <p className="text-xs text-card-foreground/55">
+                  ≈ {displayToOz(volumeDisplay, "ml")} oz logged.
+                </p>
+              ) : null}
               {errors.volume_oz ? (
                 <p className="text-xs text-amber-700">
                   {errors.volume_oz.message}
@@ -188,15 +252,16 @@ export function FeedForm() {
               ) : null}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="wasted_oz">Wasted (oz, optional)</Label>
+              <Label htmlFor="wasted_oz">Wasted ({volumeUnit}, optional)</Label>
               <Input
                 id="wasted_oz"
                 type="number"
                 inputMode="decimal"
-                step="0.1"
+                step={volumeUnit === "ml" ? "1" : "0.1"}
                 min={0}
-                max={20}
-                {...register("wasted_oz")}
+                max={volumeUnit === "ml" ? 600 : 20}
+                value={wastedDisplay}
+                onChange={(e) => changeWasted(e.target.value)}
               />
               <p className="text-xs text-card-foreground/55">
                 Tracked separately — not counted toward today&apos;s intake.
