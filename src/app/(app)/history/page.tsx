@@ -21,7 +21,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { EventList, type EventDayGroup, type EventRow } from "@/components/EventList";
-import { IntakeByAge, type IntakeByAgeRow } from "@/components/IntakeByAge";
+import { IntakeByAgeTrend, type IntakeByAgeRow } from "@/components/IntakeByAgeTrend";
 import { IntakeTrendChart } from "@/components/IntakeTrendChart";
 import { getRangeSummary } from "@/lib/day-summary";
 import { intakeRangeForWeek } from "@/lib/targets";
@@ -267,7 +267,7 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
       <IntakeTrendChart days={trend.days} timeZone={timeZone} />
 
       <h2 className="mt-10 mb-3 text-lg text-foreground">What he needs by age</h2>
-      <IntakeByAge babyName={detail.baby.name} rows={byAgeRows} />
+      <IntakeByAgeTrend babyName={detail.baby.name} rows={byAgeRows} />
 
       <h2 className="mt-10 mb-1 text-lg text-foreground">Entries by day</h2>
       <p className="mb-4 text-sm text-foreground/60">
