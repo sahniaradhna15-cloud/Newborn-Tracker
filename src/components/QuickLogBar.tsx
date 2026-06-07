@@ -21,9 +21,9 @@ function readSay(data: unknown): string {
 }
 
 /**
- * One-tap diaper logging: three buttons fire an optimistic (offline-queued)
- * POST to /api/diapers without leaving the page. Embedded inside LogConsole
- * as the fastest path; the full forms live alongside it on the same page.
+ * One-tap diaper logging — the single diaper entry point in LogConsole. Three
+ * buttons fire an optimistic (offline-queued) POST to /api/diapers at "now"
+ * without leaving the page. (Time/note tweaks happen via History edit.)
  */
 export function QuickLogBar() {
   const router = useRouter();
@@ -54,7 +54,7 @@ export function QuickLogBar() {
   }
 
   const pillLift =
-    "flex-1 rounded-full transition-transform motion-safe:hover:-translate-y-0.5";
+    "h-16 flex-1 rounded-2xl text-base transition-transform motion-safe:hover:-translate-y-0.5";
 
   return (
     <div className="flex flex-wrap gap-2">

@@ -1,5 +1,5 @@
 /**
- * `POST /api/diapers` (session) — the PWA DiaperForm / QuickLogBar endpoint.
+ * `POST /api/diapers` (session) — the PWA one-tap diaper (QuickLogBar) endpoint.
  * Maps the flat body into the canonical {@link InboundEvent} and calls
  * {@link recordEvent} (single write path). Returns the inserted row + `say`.
  *
