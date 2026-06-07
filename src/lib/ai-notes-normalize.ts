@@ -7,15 +7,18 @@
  * (preview === commit, idempotent re-import, recordEvent write path) are
  * unchanged. The model only reformats; it never writes to the database.
  *
- * Provider: **Groq** (free tier, fast, Zero-Data-Retention capable) via its
- * OpenAI-compatible chat endpoint — no SDK, just fetch. Model is configurable
- * (GROQ_MODEL) and defaults to a capable open model. temp 0 for determinism so
- * the same notes normalize the same way (stable dedupe keys). Callable only
- * when GROQ_API_KEY is set; the route falls back to the rule parser when the
- * key is absent or this throws.
+ * Provider: **Google Gemini** (free tier) via its OpenAI-compatible chat
+ * endpoint — no SDK, just fetch with a Bearer key. Model is configurable
+ * (GEMINI_MODEL) and defaults to the cheapest fast model. temp 0 for
+ * determinism so the same notes normalize the same way (stable dedupe keys).
+ * Callable only when GEMINI_API_KEY is set; the route falls back to the rule
+ * parser when the key is absent or this throws (e.g. a free-tier 429).
+ *
+ * Privacy note: Google's free tier may use submitted prompts to improve its
+ * products (the user accepted this tradeoff). The `/import` disclosure says so.
  */
-const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const DEFAULT_MODEL = "gemini-2.5-flash-lite";
 const MAX_OUTPUT_TOKENS = 8_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -56,9 +59,9 @@ June 1 2026
 (gave vitamin D drops)
 7 pm - breast milk 70 ml`;
 
-/** True when an LLM normalizer is configured (Groq key present). */
+/** True when an LLM normalizer is configured (Gemini key present). */
 export function isAiNormalizeConfigured(): boolean {
-  return Boolean(process.env.GROQ_API_KEY);
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 
 /** Strip a stray ```fence``` wrapper if the model adds one despite instructions. */
@@ -68,7 +71,7 @@ function stripCodeFence(text: string): string {
 }
 
 /**
- * Reformat `rawText` into canonical notes via Groq. Returns the normalized
+ * Reformat `rawText` into canonical notes via Gemini. Returns the normalized
  * text. Throws on missing key, HTTP error, or malformed response so the caller
  * can fall back to the rule parser.
  *
@@ -76,14 +79,14 @@ function stripCodeFence(text: string): string {
  * @param defaultYear year to assume for date headers that omit one (baby's birth year)
  */
 export async function normalizeNotesWithAi(rawText: string, defaultYear: number): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY is not set");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
 
-  const res = await fetch(GROQ_ENDPOINT, {
+  const res = await fetch(GEMINI_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: process.env.GROQ_MODEL || DEFAULT_MODEL,
+      model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       temperature: 0,
       max_tokens: MAX_OUTPUT_TOKENS,
       messages: [
@@ -99,12 +102,12 @@ export async function normalizeNotesWithAi(rawText: string, defaultYear: number)
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`Groq API ${res.status}: ${detail.slice(0, 200)}`);
+    throw new Error(`Gemini API ${res.status}: ${detail.slice(0, 200)}`);
   }
 
   const data = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
   const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("Groq API returned no message content");
+  if (typeof content !== "string") throw new Error("Gemini API returned no message content");
 
   return stripCodeFence(content);
 }

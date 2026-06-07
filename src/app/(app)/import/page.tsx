@@ -32,9 +32,8 @@ export default async function ImportPage() {
       <ImportConsole />
 
       <p className="mt-8 border-t border-white/10 pt-3 text-xs text-foreground/55">
-        To read free-form notes, the text you paste is sent to an AI service (Groq) to interpret — it isn’t stored or
-        used to train models. Dates can be month names or numbers; amounts can be ml or oz. Nothing is saved until you
-        review and press Import. Not medical advice.
+        To read free-form notes, the text you paste is sent to Google’s Gemini AI to interpret. Dates can be month names
+        or numbers; amounts can be ml or oz. Nothing is saved until you review and press Import. Not medical advice.
       </p>
     </main>
   );

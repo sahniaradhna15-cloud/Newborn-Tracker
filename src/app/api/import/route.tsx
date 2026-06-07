@@ -102,7 +102,7 @@ async function resolveNotesText(
         error: error instanceof Error ? error.message : String(error),
         user_id: userId,
         fix_suggestion:
-          "LLM normalization failed — falling back to the rule parser. Check GROQ_API_KEY validity, the GROQ_MODEL id, and Groq rate limits (free tier ~6K TPM).",
+          "LLM normalization failed — falling back to the rule parser. Check GEMINI_API_KEY validity, the GEMINI_MODEL id, and Gemini free-tier rate limits (a 429 means quota hit; chunk large pastes).",
       }),
     );
     return { text: rawText, aiUsed: false };
